@@ -1,3 +1,13 @@
+"""
+Text prompt templates for different dataset classes
+
+Fred Zhang <frederic.zhang@adelaide.edu.au>
+Australian Institute for Machine Learning
+
+Modified from the codebase by Ilharco et al.,
+at https://github.com/mlfoundations/task_vectors
+"""
+
 cars_template = [
     lambda c: f'a photo of a {c}.',
     lambda c: f'a photo of the {c}.',
@@ -219,6 +229,10 @@ dataset_to_template = {
 
 
 def get_templates(dataset_name):
+    # Remove class-specific prefix
+    if '_' in dataset_name:
+        _, dataset_name = dataset_name.split('_')
+
     if dataset_name.endswith('Val'):
         return get_templates(dataset_name.replace('Val', ''))
     assert dataset_name in dataset_to_template, f'Unsupported dataset: {dataset_name}'
