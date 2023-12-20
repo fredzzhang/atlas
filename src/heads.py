@@ -1,3 +1,14 @@
+"""
+Contruction of the classification head using text embeddings
+
+Fred Zhang <frederic.zhang@adelaide.edu.au>
+Australian Institute for Machine Learning
+
+Modified from the codebase by Ilharco et al. and Guillermo Ortiz-Jimenez et al.,
+at https://github.com/mlfoundations/task_vectors and
+https://github.com/gortizji/tangent_task_arithmetic
+"""
+
 import os
 
 import open_clip
@@ -10,7 +21,7 @@ from src.modeling import ClassificationHead, ImageEncoder
 
 
 def build_classification_head(model, dataset_name, template, data_location, device):
-    template = get_templates(dataset_name)
+    # template = get_templates(dataset_name)
 
     logit_scale = model.logit_scale
     dataset = get_dataset(dataset_name, None, location=data_location)

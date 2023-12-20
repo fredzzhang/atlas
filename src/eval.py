@@ -1,3 +1,14 @@
+"""
+Evaluation on a dataset
+
+Fred Zhang <frederic.zhang@adelaide.edu.au>
+Australian Institute for Machine Learning
+
+Modified from the codebase by Ilharco et al. and Guillermo Ortiz-Jimenez et al.,
+at https://github.com/mlfoundations/task_vectors and
+https://github.com/gortizji/tangent_task_arithmetic
+"""
+
 import numpy as np
 import torch
 import tqdm
@@ -11,7 +22,12 @@ from src.modeling import ImageClassifier
 
 
 def eval_single_dataset(image_encoder, dataset_name, args):
-    classification_head = get_classification_head(args, dataset_name)
+    # Build the classification head with all classes, when the dataset only has one.
+    if '_' in dataset_name:
+        dataset_name_ = dataset_name.split('_')[-1]
+    else:
+        dataset_name_ = dataset_name
+    classification_head = get_classification_head(args, dataset_name_)
     model = ImageClassifier(image_encoder, classification_head)
 
     model.eval()

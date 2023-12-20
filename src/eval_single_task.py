@@ -1,3 +1,14 @@
+"""
+Evaluation on a task
+
+Fred Zhang <frederic.zhang@adelaide.edu.au>
+Australian Institute for Machine Learning
+
+Modified from the codebase by Ilharco et al. and Guillermo Ortiz-Jimenez et al.,
+at https://github.com/mlfoundations/task_vectors and
+https://github.com/gortizji/tangent_task_arithmetic
+"""
+
 import json
 
 from src.args import parse_arguments
@@ -25,14 +36,24 @@ elif args.finetuning_mode == "posthoc":
     print("Evaluating post-hoc linearized models.")
 
 for dataset in [
-    "Cars",
-    "DTD",
-    "EuroSAT",
-    "GTSRB",
-    "MNIST",
-    "RESISC45",
-    "SUN397",
-    "SVHN",
+    # "Cars",
+    # "DTD",
+    # "EuroSAT",
+    # "GTSRB",
+    # "MNIST",
+    # "RESISC45",
+    # "SUN397",
+    # "SVHN",
+    "0_MNIST",
+    "1_MNIST",
+    "2_MNIST",
+    "3_MNIST",
+    "4_MNIST",
+    "5_MNIST",
+    "6_MNIST",
+    "7_MNIST",
+    "8_MNIST",
+    "9_MNIST",
 ]:
     print("*" * 100)
     print(f"Evaluating on {dataset}")
@@ -66,6 +87,9 @@ for dataset in [
             init_encoder=zs_encoder, image_encoder=ft_encoder, args=args
         )
 
+    # Evaluate on the entire dataset
+    if '_' in dataset:
+        _, dataset = dataset.split('_')
     for split in ["test", "val"]:
         # Evaluate
         print("=" * 100)

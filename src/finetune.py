@@ -1,3 +1,14 @@
+"""
+Fine-tune the CLIP model
+
+Fred Zhang <frederic.zhang@adelaide.edu.au>
+Australian Institute for Machine Learning
+
+Modified from the codebase by Ilharco et al. and Guillermo Ortiz-Jimenez et al.,
+at https://github.com/mlfoundations/task_vectors and
+https://github.com/gortizji/tangent_task_arithmetic
+"""
+
 import os
 import time
 
@@ -60,7 +71,10 @@ def finetune(rank, args):
             else ImageEncoder(args)
         )
 
-    classification_head = get_classification_head(args, train_dataset)
+    # Build the classification head with all classes, when the dataset only has one.
+    if '_' in train_dataset:
+        train_dataset_ = train_dataset.split('_')[-1]
+    classification_head = get_classification_head(args, train_dataset_)
 
     model = ImageClassifier(image_encoder, classification_head)
 
@@ -194,24 +208,44 @@ def finetune(rank, args):
 
 if __name__ == "__main__":
     train_datasets = [
-        "Cars",
-        "DTD",
-        "EuroSAT",
-        "GTSRB",
-        "MNIST",
-        "RESISC45",
-        "SUN397",
-        "SVHN",
+        # "Cars",
+        # "DTD",
+        # "EuroSAT",
+        # "GTSRB",
+        # "MNIST",
+        # "RESISC45",
+        # "SUN397",
+        # "SVHN",
+        "0_MNIST",
+        "1_MNIST",
+        "2_MNIST",
+        "3_MNIST",
+        "4_MNIST",
+        "5_MNIST",
+        "6_MNIST",
+        "7_MNIST",
+        "8_MNIST",
+        "9_MNIST",
     ]
     epochs = {
-        "Cars": 35,
-        "DTD": 76,
-        "EuroSAT": 12,
-        "GTSRB": 11,
-        "MNIST": 5,
-        "RESISC45": 15,
-        "SUN397": 14,
-        "SVHN": 4,
+        # "Cars": 35,
+        # "DTD": 76,
+        # "EuroSAT": 12,
+        # "GTSRB": 11,
+        # "MNIST": 5,
+        # "RESISC45": 15,
+        # "SUN397": 14,
+        # "SVHN": 4,
+        "0_MNIST": 5,
+        "1_MNIST": 5,
+        "2_MNIST": 5,
+        "3_MNIST": 5,
+        "4_MNIST": 5,
+        "5_MNIST": 5,
+        "6_MNIST": 5,
+        "7_MNIST": 5,
+        "8_MNIST": 5,
+        "9_MNIST": 5,
     }
 
     for dataset in train_datasets:
