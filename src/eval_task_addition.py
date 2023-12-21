@@ -1,3 +1,14 @@
+"""
+Evaluation on the composition of task vectors
+
+Fred Zhang <frederic.zhang@adelaide.edu.au>
+Australian Institute for Machine Learning
+
+Modified from the codebase by Ilharco et al. and Guillermo Ortiz-Jimenez et al.,
+at https://github.com/mlfoundations/task_vectors and
+https://github.com/gortizji/tangent_task_arithmetic
+"""
+
 import json
 import os
 
@@ -82,6 +93,7 @@ optimal_coef = find_optimal_coef(
     metric="avg_normalized_top1",
     minimize=False,
 )
+print(f"=> The optimal coefficient is {optimal_coef:.2f}.")
 
 # Evaluate on the test set with the optimal coefficient.
 args.eval_datasets = [dataset for dataset in eval_datasets]
