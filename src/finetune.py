@@ -82,7 +82,7 @@ def finetune(rank, args):
     model = model.cuda()
 
     preprocess_fn = model.train_preprocess
-    print_every = 100
+    print_every = 10
 
     dataset = get_dataset(
         train_dataset,
@@ -236,16 +236,16 @@ if __name__ == "__main__":
         # "RESISC45": 15,
         # "SUN397": 14,
         # "SVHN": 4,
-        "0_MNIST": 5,
-        "1_MNIST": 5,
-        "2_MNIST": 5,
-        "3_MNIST": 5,
-        "4_MNIST": 5,
-        "5_MNIST": 5,
-        "6_MNIST": 5,
-        "7_MNIST": 5,
-        "8_MNIST": 5,
-        "9_MNIST": 5,
+        "0_MNIST": 1,
+        "1_MNIST": 1,
+        "2_MNIST": 1,
+        "3_MNIST": 1,
+        "4_MNIST": 1,
+        "5_MNIST": 1,
+        "6_MNIST": 1,
+        "7_MNIST": 1,
+        "8_MNIST": 1,
+        "9_MNIST": 1,
     }
 
     for dataset in train_datasets:

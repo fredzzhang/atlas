@@ -36,14 +36,16 @@ with open(os.path.join(args.save, "zeroshot_accuracies.json")) as f:
     pretrained_accuracies = json.load(f)
 
 eval_datasets = [
-    "Cars",
-    "DTD",
-    "EuroSAT",
-    "GTSRB",
-    "MNIST",
-    "RESISC45",
-    "SVHN",
-    "SUN397",
+    "0_MNIST",
+    "1_MNIST",
+    "2_MNIST",
+    "3_MNIST",
+    "4_MNIST",
+    "5_MNIST",
+    "6_MNIST",
+    "7_MNIST",
+    "8_MNIST",
+    "9_MNIST",
 ]
 
 task_vectors = []
