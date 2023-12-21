@@ -1,3 +1,14 @@
+"""
+Argument list
+
+Fred Zhang <frederic.zhang@adelaide.edu.au>
+Australian Institute for Machine Learning
+
+Modified from the codebase by Ilharco et al. and Guillermo Ortiz-Jimenez et al.,
+at https://github.com/mlfoundations/task_vectors and
+https://github.com/gortizji/tangent_task_arithmetic
+"""
+
 import argparse
 import os
 
@@ -17,6 +28,12 @@ def parse_arguments():
         default=None,
         type=lambda x: x.split(","),
         help="Which datasets to use for evaluation. Split by comma, e.g. MNIST,EuroSAT. ",
+    )
+    parser.add_argument(
+        "--eval-on-full",
+        default=False,
+        action="store_true",
+        help="Evaluate on the full dataset, when the model is trained on one class."
     )
     parser.add_argument(
         "--train-dataset",
