@@ -149,7 +149,7 @@ def extract_class_data(dataset, cls_idx, batch_size, num_workers):
     )
     subset.test_dataset = Subset(dataset.test_dataset, test_subset)
     subset.test_loader = torch.utils.data.DataLoader(
-        subset.test_loader,
+        subset.test_dataset,
         batch_size=batch_size,
         num_workers=num_workers
     )
