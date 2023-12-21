@@ -63,7 +63,6 @@ def split_train_into_train_val(dataset, new_dataset_class_name, batch_size, num_
     # if new_dataset_class_name == 'MNISTVal':
     #     assert trainset.indices[0] == 36044
 
-
     new_dataset = None
 
     new_dataset_class = type(new_dataset_class_name, (GenericDataset, ), {})
@@ -89,8 +88,8 @@ def split_train_into_train_val(dataset, new_dataset_class_name, batch_size, num_
     return new_dataset
 
 def find_data_with_index(dataset, cls_idx):
-    """
-    Find the indices of the data corresponding to the designated class
+    """Find the indices of the data corresponding to the designated class
+    NOTE: This is very slow and is not recommended.
 
     Parameters:
     -----------
@@ -105,15 +104,13 @@ def find_data_with_index(dataset, cls_idx):
         A list of indices.
     """
     indices = []
-    # NOTE: This is potentially very slow!
     for i, (_, target) in enumerate(dataset):
         if target == cls_idx:
             indices.append(i)
     return indices
 
 def extract_class_data(dataset, cls_idx, batch_size, num_workers):
-    """
-    Isolate a designated class from a dataset
+    """Isolate a designated class from a dataset
 
     Parameters:
     -----------
@@ -138,8 +135,8 @@ def extract_class_data(dataset, cls_idx, batch_size, num_workers):
     subset = GenericDataset()
     subset.classnames = classnames
 
-    train_subset = find_data_with_index(dataset.train_dataset, cls_idx)
-    test_subset = find_data_with_index(dataset.test_dataset, cls_idx)
+    train_subset = dataset.class_splits['train'][str(cls_idx)]
+    test_subset = dataset.class_splits['test'][str(cls_idx)]
     subset.train_dataset = Subset(dataset.train_dataset, train_subset)
     subset.train_loader = torch.utils.data.DataLoader(
         subset.train_dataset,
