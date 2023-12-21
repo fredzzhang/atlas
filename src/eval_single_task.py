@@ -88,7 +88,7 @@ for dataset in [
         )
 
     # Evaluate on the entire dataset
-    if '_' in dataset:
+    if args.eval_on_full and '_' in dataset:
         _, dataset = dataset.split('_')
     for split in ["test", "val"]:
         # Evaluate
