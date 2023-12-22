@@ -58,7 +58,15 @@ for dataset in [
     print("*" * 100)
     print(f"Evaluating on {dataset}")
 
-    pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
+    # NOTE The original code might have a bug here. This part has been changed because
+    # the linearised model only has the state_dict saved and thus has a different data type.
+
+    # pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
+    pretrained_checkpoint = (
+        f"{args.save}/{dataset}Val/linear_zeroshot.pt"
+        if args.finetuning_mode == "linear"
+        else f"{args.save}/{dataset}Val/zeroshot.pt"
+    )
 
     finetuned_checkpoint = (
         f"{args.save}/{dataset}Val/linear_finetuned.pt"
