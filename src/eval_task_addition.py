@@ -77,6 +77,10 @@ for dataset in eval_datasets:
 
 task_vector = sum(task_vectors)
 
+# Evaluate on the full dataset
+if args.eval_on_full:
+    eval_datasets = [eval_datasets[0].split('_')[-1],]
+
 args.eval_datasets = [dataset + "Val" for dataset in eval_datasets]
 args.control_dataset = None
 
