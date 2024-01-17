@@ -84,7 +84,7 @@ def finetune(rank, args):
     model = model.cuda()
 
     preprocess_fn = model.train_preprocess
-    print_every = 10
+    print_every = 50
 
     dataset = get_dataset(
         train_dataset,
@@ -185,9 +185,7 @@ def finetune(rank, args):
                     flush=True,
                 )
 
-    # FIXME: Make this work with DDP.
-    if is_main_process():
-        # We only need to evaluate the model on the first GPU.
+        # Test the model each epoch 
         image_encoder = ddp_model.module.image_encoder
         eval_single_dataset(image_encoder, train_dataset, args)
 
@@ -210,7 +208,7 @@ def finetune(rank, args):
 
 if __name__ == "__main__":
     train_datasets = [
-        "Cars",
+        # "Cars",
         # "DTD",
         # "EuroSAT",
         # "GTSRB",
@@ -218,19 +216,11 @@ if __name__ == "__main__":
         # "RESISC45",
         # "SUN397",
         # "SVHN",
-        # "0_MNIST",
-        # "1_MNIST",
-        # "2_MNIST",
-        # "3_MNIST",
-        # "4_MNIST",
-        # "5_MNIST",
-        # "6_MNIST",
-        # "7_MNIST",
-        # "8_MNIST",
-        # "9_MNIST",
+        "01234_MNIST",
+        "56789_MNIST",
     ]
     epochs = {
-        "Cars": 35,
+        # "Cars": 35,
         # "DTD": 76,
         # "EuroSAT": 12,
         # "GTSRB": 11,
@@ -238,16 +228,8 @@ if __name__ == "__main__":
         # "RESISC45": 15,
         # "SUN397": 14,
         # "SVHN": 4,
-        # "0_MNIST": 1,
-        # "1_MNIST": 1,
-        # "2_MNIST": 1,
-        # "3_MNIST": 1,
-        # "4_MNIST": 1,
-        # "5_MNIST": 1,
-        # "6_MNIST": 1,
-        # "7_MNIST": 1,
-        # "8_MNIST": 1,
-        # "9_MNIST": 1,
+        "01234_MNIST": 5,
+        "56789_MNIST": 5,
     }
 
     for dataset in train_datasets:

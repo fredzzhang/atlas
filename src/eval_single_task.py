@@ -44,16 +44,8 @@ for dataset in [
     # "RESISC45",
     # "SUN397",
     # "SVHN",
-    "0_MNIST",
-    "1_MNIST",
-    "2_MNIST",
-    "3_MNIST",
-    "4_MNIST",
-    "5_MNIST",
-    "6_MNIST",
-    "7_MNIST",
-    "8_MNIST",
-    "9_MNIST",
+    "01234_MNIST",
+    "56789_MNIST",
 ]:
     print("*" * 100)
     print(f"Evaluating on {dataset}")

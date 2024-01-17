@@ -47,16 +47,8 @@ with open(os.path.join(args.save, "zeroshot_accuracies.json")) as f:
     pretrained_accuracies = json.load(f)
 
 eval_datasets = [
-    "0_MNIST",
-    "1_MNIST",
-    "2_MNIST",
-    "3_MNIST",
-    "4_MNIST",
-    "5_MNIST",
-    "6_MNIST",
-    "7_MNIST",
-    "8_MNIST",
-    "9_MNIST",
+    "01234_MNIST",
+    "56789_MNIST",
 ]
 
 task_vectors = []
@@ -94,7 +86,7 @@ val_metrics = evaluate_task_vector(
 
 optimal_coef = find_optimal_coef(
     val_metrics,
-    metric="avg_normalized_top1",
+    metric="avg_top1",
     minimize=False,
 )
 print(f"=> The optimal coefficient is {optimal_coef:.2f}.")
@@ -110,7 +102,7 @@ test_metrics = evaluate_task_vector_at_coef(
 )
 
 print("=" * 100)
-print(f"Test normalized accuracy: {test_metrics['avg_normalized_top1']}")
+# print(f"Test normalized accuracy: {test_metrics['avg_normalized_top1']}")
 print(f"Test absolute accuracy: {test_metrics['avg_top1']}")
 additive_accuracies = {"test": test_metrics, "val": val_metrics}
 
