@@ -12,6 +12,7 @@ import sys
 import inspect
 import torch
 import copy
+import itertools
 
 from torch.utils.data.dataset import Subset, random_split
 
@@ -110,7 +111,7 @@ def find_data_with_index(dataset, cls_idx):
     return indices
 
 def extract_class_data(dataset, cls_idx, batch_size, num_workers):
-    """Isolate a designated class from a dataset
+    """Isolate one or more designated classes from a dataset
 
     Parameters:
     -----------
@@ -118,25 +119,31 @@ def extract_class_data(dataset, cls_idx, batch_size, num_workers):
         A dataset container, with the following attributes
             self.train_dataset, self.train_loader,
             self.test_dataset, self.test_loader, self.classnames.
-    cls_idx: int
-        Index of the class to extract data for.
+    cls_idx: List[int]
+        Indices of the classes to extract data for.
 
     Returns:
     --------
     subset: GenericDataset
-        A subset containing data for the selected class.
+        A subset containing data for the selected classes.
     """
-    if cls_idx is None:
+    if cls_idx is None or len(cls_idx) == 0:
         return dataset
-    if cls_idx >= len(dataset.classnames):
+    if max(cls_idx) >= len(dataset.classnames):
         raise ValueError(f"Class index {cls_idx} exceeds the total class number.")
     else:
-        classnames = [dataset.classnames[cls_idx],]
+        classnames = [dataset.classnames[i] for i in cls_idx]
     subset = GenericDataset()
     subset.classnames = classnames
 
-    train_subset = dataset.class_splits['train'][str(cls_idx)]
-    test_subset = dataset.class_splits['test'][str(cls_idx)]
+    train_split = dataset.class_splits['train']
+    train_subset = list(itertools.chain.from_iterable(
+        [train_split[str(i)] for i in cls_idx]
+    ))
+    test_split = dataset.class_splits['test']
+    test_subset = list(itertools.chain.from_iterable(
+        [test_split[str(i)] for i in cls_idx]
+    ))
     subset.train_dataset = Subset(dataset.train_dataset, train_subset)
     subset.train_loader = torch.utils.data.DataLoader(
         subset.train_dataset,
@@ -158,7 +165,7 @@ def get_dataset(dataset_name, preprocess, location, batch_size=128, num_workers=
     cls_idx = None
     if '_' in dataset_name:
         cls_idx, dataset_name = dataset_name.split('_')
-        cls_idx = int(cls_idx)
+        cls_idx = [int(i) for i in cls_idx]
     
     if dataset_name.endswith('Val'):
         # Handle val splits
