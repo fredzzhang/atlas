@@ -36,6 +36,12 @@ def parse_arguments():
         help="Evaluate on the full dataset, when the model is trained on one class."
     )
     parser.add_argument(
+        "--orthog-coef",
+        default=1.0,
+        type=float,
+        help="The coeffcient on the orthognality regularistion term."
+    )
+    parser.add_argument(
         "--train-dataset",
         default=None,
         type=lambda x: x.split(","),
