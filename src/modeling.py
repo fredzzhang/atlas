@@ -208,9 +208,9 @@ class TaskVectorWithGrad:
         """Compute the cosine similarity against another task vector"""
         n = self.norm()
         if n == 0:
-            return 0
+            return 0.0
         else:
-            return self.dot(x) / (x.norm() * n)
+            return torch.abs(self.dot(x) / (x.norm() * n))
 
 class ImageClassifierWithOrthogReg(ImageClassifier):
     def __init__(self, pretrained_checkpoint, *args, **kwargs):
@@ -228,7 +228,7 @@ class ImageClassifierWithOrthogReg(ImageClassifier):
             )
             reg = w_delta.sim(task_vector)
         else:
-            reg = 0
+            reg = 0.0
 
         return outputs, reg
     
