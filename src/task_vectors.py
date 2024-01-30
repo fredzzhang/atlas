@@ -1,3 +1,14 @@
+"""
+Task vectors
+
+Fred Zhang <frederic.zhang@adelaide.edu.au>
+Australian Institute for Machine Learning
+
+Modified from the codebase by Ilharco et al. and Guillermo Ortiz-Jimenez et al.,
+at https://github.com/mlfoundations/task_vectors and
+https://github.com/gortizji/tangent_task_arithmetic
+"""
+
 import abc
 
 import torch
@@ -125,7 +136,11 @@ class _TaskVector(abc.ABC):
                 )
         pretrained_model.load_state_dict(new_state_dict)
         return pretrained_model
-
+    
+    def to(self, device):
+        """Relocate the task vector to a designated device."""
+        for k in self.vector:
+            self.vector[k] = self.vector[k].to(device)
 
 class NonLinearTaskVector(_TaskVector):
     """A task vector for nonlinear models."""
