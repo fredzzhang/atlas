@@ -170,9 +170,9 @@ def finetune(rank, args):
 
             logits, reg = ddp_model(task_vector, inputs)
 
-            loss = loss_fn(logits, labels)
+            cls_loss = loss_fn(logits, labels)
             # Add the orthognality regularisation term
-            loss = loss + reg
+            loss = cls_loss + reg
             loss.backward()
 
             if (i + 1) % args.num_grad_accumulation == 0:
@@ -202,10 +202,12 @@ def finetune(rank, args):
                 and ((i + 1) % args.num_grad_accumulation == 0)
                 and is_main_process()
             ):
+                reg_val = reg if isinstance(reg, float) else reg.item()
                 percent_complete = 100 * i / len(ddp_loader)
                 print(
-                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i}/{len(dataset.train_loader)}]\t"  # noqa: E501
-                    f"Loss: {loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",  # noqa: E501
+                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i}/{len(dataset.train_loader)}]\t"                # noqa: E501
+                    f"Loss: {loss.item():.6f}\tCls loss: {cls_loss.item():.6f}\tOrthog. Reg.: {reg_val:.6f}\t"         # noqa: E501
+                    f"Data (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",                                           # noqa: E501
                     flush=True,
                 )
 
