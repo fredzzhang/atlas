@@ -1,3 +1,13 @@
+"""
+Model definitions
+
+Fred Zhang <frederic.zhang@adelaide.edu.au>
+Australian Institute for Machine Learning
+
+Modified from the codebase by Ilharco et al.
+at https://github.com/mlfoundations/task_vectors
+"""
+
 import open_clip
 import torch
 
@@ -150,3 +160,77 @@ class MultiHeadImageClassifier(torch.nn.Module):
     def load(cls, filename):
         print(f"Loading image classifier from {filename}")
         return utils.torch_load(filename)
+
+class TaskVectorWithGrad:
+    """A variant of the task vector with gradient enabled. It initialises the task vector
+    from a pretrained checkpoints and a model's parameters that are being fine-tuned.
+    
+    NOTE: The definition of this class was included in this script as opposed to task_vectors.py,
+    in order to avoid circular imports.
+    """
+    def __init__(self, pretrained_checkpoint, finetuned_model_params, device='cpu', linear=False):
+        if linear:
+            raise NotImplementedError()
+            # pretrained_state_dict = LinearizedImageEncoder.load(pretrained_checkpoint).state_dict()
+        else:
+            pretrained_state_dict = torch.load(pretrained_checkpoint, map_location=device).state_dict()
+
+        self.vector = {}
+        for key, param in zip(pretrained_state_dict, finetuned_model_params):
+            if pretrained_state_dict[key].dtype == torch.int64:
+                continue
+            if pretrained_state_dict[key].dtype == torch.uint8:
+                continue
+            self.vector[key] = (
+                param - pretrained_state_dict[key]
+            )
+
+    def to(self, device):
+        """Relocate the task vector to a designated device."""
+        for k in self.vector:
+            self.vector[k] = self.vector[k].to(device)
+
+    def dot(self, other):
+        """Dot product of two task vectors."""
+        dot_product = 0.0
+        for key in self.vector:
+            if key not in other.vector:
+                print(f"Warning, key {key} is not present in both task vectors.")
+                continue
+            dot_product += torch.sum(self.vector[key] * other.vector[key])
+        return dot_product
+
+    def norm(self):
+        """Norm of a task vector."""
+        return torch.sqrt(self.dot(self))
+
+    def sim(self, x):
+        """Compute the cosine similarity against another task vector"""
+        n = self.norm()
+        if n == 0:
+            return 0
+        else:
+            return self.dot(x) / (x.norm() * n)
+
+class ImageClassifierWithOrthogReg(ImageClassifier):
+    def __init__(self, pretrained_checkpoint, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pretrained_checkpoint = pretrained_checkpoint
+
+    def forward(self, task_vector, *args, **kwargs):
+        outputs = super().forward(*args, **kwargs)
+        # Compute the orthognality regularisation term
+        if task_vector is not None:
+            params = self.image_encoder.parameters()
+            w_delta = TaskVectorWithGrad(
+                self.pretrained_checkpoint,
+                params, device=outputs.device
+            )
+            reg = w_delta.sim(task_vector)
+        else:
+            reg = 0
+
+        return outputs, reg
+    
+    def __call__(self, task_vector, *args, **kwargs):
+        return self.forward(task_vector, *args, **kwargs)
