@@ -21,8 +21,9 @@ from src.distributed import cleanup_ddp, distribute_loader, is_main_process, set
 from src.eval import eval_single_dataset
 from src.heads import get_classification_head
 from src.linearize import LinearizedImageEncoder
-from src.modeling import ImageClassifier, ImageEncoder
+from src.modeling import ImageEncoder, ImageClassifierWithOrthogReg
 from src.utils import LabelSmoothing, cosine_lr
+from src.task_vectors import LinearizedTaskVector, NonLinearTaskVector
 
 
 def finetune(rank, args):
@@ -71,6 +72,28 @@ def finetune(rank, args):
             else ImageEncoder(args)
         )
 
+    # Load the previous task vectors
+    task_vectors = []
+    for prev in args.previous_datasets:
+        if args.finetuning_mode == "linear":
+            pretrained_checkpoint = f"{args.save}/{prev}Val/linear_zeroshot.pt"
+            finetuned_checkpoint = f"{args.save}/{prev}Val/linear_finetuned.pt"
+            task_vectors.append(
+                LinearizedTaskVector(pretrained_checkpoint, finetuned_checkpoint)
+            )
+        else:
+            pretrained_checkpoint = f"{args.save}/{prev}Val/zeroshot.pt"
+            finetuned_checkpoint = f"{args.save}/{prev}Val/finetuned.pt"
+            task_vectors.append(
+                NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint)
+            )
+    if len(task_vectors):
+        task_vector = sum(task_vectors)
+    else:
+        task_vector = None
+    # Relocate the task vector to the designated device
+    task_vector.to(f"cuda:{rank}")
+
     # Build the classification head with all classes, when the dataset only has one.
     if '_' in train_dataset:
         train_dataset_ = train_dataset.split('_')[-1]
@@ -78,7 +101,12 @@ def finetune(rank, args):
         train_dataset_ = train_dataset
     classification_head = get_classification_head(args, train_dataset_)
 
-    model = ImageClassifier(image_encoder, classification_head)
+    zs_model_path = (
+        os.path.join(ckpdir, "linear_zeroshot.pt")
+        if linearized_finetuning
+        else os.path.join(ckpdir, "zeroshot.pt")
+    )
+    model = ImageClassifierWithOrthogReg(zs_model_path, image_encoder, classification_head)
 
     model.freeze_head()
     model = model.cuda()
@@ -122,12 +150,7 @@ def finetune(rank, args):
     # Saving zero-shot model
     if args.save is not None and is_main_process():
         os.makedirs(ckpdir, exist_ok=True)
-        model_path = (
-            os.path.join(ckpdir, "linear_zeroshot.pt")
-            if linearized_finetuning
-            else os.path.join(ckpdir, "zeroshot.pt")
-        )
-        ddp_model.module.image_encoder.save(model_path)
+        ddp_model.module.image_encoder.save(zs_model_path)
 
     for epoch in range(args.epochs):
         ddp_model.train()
@@ -145,10 +168,11 @@ def finetune(rank, args):
             labels = batch["labels"].cuda()
             data_time = time.time() - start_time
 
-            logits = ddp_model(inputs)
+            logits, reg = ddp_model(task_vector, inputs)
 
             loss = loss_fn(logits, labels)
-
+            # Add the orthognality regularisation term
+            loss = loss + reg
             loss.backward()
 
             if (i + 1) % args.num_grad_accumulation == 0:
@@ -185,7 +209,9 @@ def finetune(rank, args):
                     flush=True,
                 )
 
-        # Test the model each epoch 
+    # FIXME: Make this work with DDP.
+    if is_main_process():
+        # We only need to evaluate the model on the first GPU.
         image_encoder = ddp_model.module.image_encoder
         eval_single_dataset(image_encoder, train_dataset, args)
 
@@ -208,32 +234,40 @@ def finetune(rank, args):
 
 if __name__ == "__main__":
     train_datasets = [
-        # "Cars",
-        # "DTD",
-        # "EuroSAT",
-        # "GTSRB",
-        # "MNIST",
-        # "RESISC45",
-        # "SUN397",
-        # "SVHN",
-        "01234_MNIST",
-        "56789_MNIST",
+        "Cars",
+        "DTD",
+        "EuroSAT",
+        "GTSRB",
+        "MNIST",
+        "RESISC45",
+        "SUN397",
+        "SVHN",
+        # "01_MNIST",
+        # "23_MNIST",
+        # "45_MNIST",
+        # "67_MNIST",
+        # "89_MNIST",
     ]
     epochs = {
-        # "Cars": 35,
-        # "DTD": 76,
-        # "EuroSAT": 12,
-        # "GTSRB": 11,
-        # "MNIST": 5,
-        # "RESISC45": 15,
-        # "SUN397": 14,
-        # "SVHN": 4,
-        "01234_MNIST": 5,
-        "56789_MNIST": 5,
+        "Cars": 35,
+        "DTD": 76,
+        "EuroSAT": 12,
+        "GTSRB": 11,
+        "MNIST": 5,
+        "RESISC45": 15,
+        "SUN397": 14,
+        "SVHN": 4,
+        # "01_MNIST": 1,
+        # "23_MNIST": 1,
+        # "45_MNIST": 1,
+        # "67_MNIST": 1,
+        # "89_MNIST": 1,
     }
 
+    previous_datasets = []
     for dataset in train_datasets:
         args = parse_arguments()
+        args.previous_datasets = previous_datasets
 
         # HACK: Some command line arguments are overwritten by defaults here.
         args.lr = 1e-5
@@ -252,3 +286,6 @@ if __name__ == "__main__":
         print(f"Finetuning {args.model} on {dataset}")
         print("=" * 100)
         torch.multiprocessing.spawn(finetune, args=(args,), nprocs=args.world_size)
+
+        # Add the current dataset for orthognality constraint.
+        previous_datasets.append(dataset)
