@@ -172,6 +172,7 @@ def finetune(rank, args):
 
             cls_loss = loss_fn(logits, labels)
             # Add the orthognality regularisation term
+            reg = reg * args.orthog_coef
             loss = cls_loss + reg
             loss.backward()
 
