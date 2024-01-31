@@ -13,7 +13,6 @@ import torch
 
 from src import utils
 
-
 class ImageEncoder(torch.nn.Module):
     def __init__(self, args, keep_lang=False):
         super().__init__()
@@ -170,8 +169,8 @@ class TaskVectorWithGrad:
     """
     def __init__(self, pretrained_checkpoint, finetuned_model_params, device='cpu', linear=False):
         if linear:
-            raise NotImplementedError()
-            # pretrained_state_dict = LinearizedImageEncoder.load(pretrained_checkpoint).state_dict()
+            pretrained_state_dict = torch.load(pretrained_checkpoint)
+            pretrained_state_dict.pop('model_name')
         else:
             pretrained_state_dict = torch.load(pretrained_checkpoint, map_location=device).state_dict()
 
@@ -224,7 +223,8 @@ class ImageClassifierWithOrthogReg(ImageClassifier):
             params = self.image_encoder.parameters()
             w_delta = TaskVectorWithGrad(
                 self.pretrained_checkpoint,
-                params, device=outputs.device
+                params, device=outputs.device,
+                linear='linear' in self.pretrained_checkpoint
             )
             reg = w_delta.sim(task_vector)
         else:
