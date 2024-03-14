@@ -1,5 +1,7 @@
 """
-Fine-tune the coefficients on different task vectors
+Given an objective,
+learn the coefficients on task vectors
+and find the optimal combination.
 
 Fred Zhang <frederic.zhang@adelaide.edu.au>
 Australian Institute for Machine Learning
@@ -10,7 +12,7 @@ import time
 
 import torch
 import torch.nn as nn
-from functorch import jvp
+from functorch import jvp, make_functional_with_buffers
 
 from src.args import parse_arguments
 from src.datasets.common import get_dataloader, maybe_dictionarize
@@ -22,20 +24,26 @@ from src.modeling import ImageClassifier
 from src.task_vectors import LinearizedTaskVector, NonLinearTaskVector
 from src.utils import LabelSmoothing, cosine_lr
 
+@torch.jit.script
+def softmax_entropy(x: torch.Tensor) -> torch.Tensor:
+    """Entropy of softmax distribution from logits."""
+    return -(x.softmax(1) * x.log_softmax(1)).sum(1)
+
 class LinearizedModel_(nn.Module):
-    def __init__(self, linear_model, task_vectors) -> None:
-        """Initializes the linearized model."""
+    def __init__(self, model, task_vectors, device) -> None:
+        """A wrapper class to enable compositions of task vectors"""
         super().__init__()
 
-        self.params0 = linear_model.params0
-        self.func0 = linear_model.func0
-        self.buffers0 = linear_model.buffers0
-        self._model_name = linear_model._model_name
+        self.params0 = model.params0
+        self.func0 = model.func0
+        self.buffers0 = model.buffers0
+        self._model_name = model._model_name
+
+        self.device = device
 
         dparams = []
         for tv in task_vectors:
-            # HACK: Pre-moving the tensor to cuda, which will not work for multi-gpu training.
-            dp = [tv.vector[k].cuda() for k in tv.vector if k.startswith('model.params.')]
+            dp = [tv.vector[k].to(device) for k in tv.vector if k.startswith('model.params.')]
             dparams.append(dp)
 
         self.dparams = dparams
@@ -50,12 +58,43 @@ class LinearizedModel_(nn.Module):
             (tuple(dparams),),
         )
         return out + dp
+    
+class ImageEncoder_(nn.Module):
+    def __init__(self, model, task_vectors, device) -> None:
+        """A wrapper class to enable compositions of task vectors"""
+        super().__init__()
+
+        func, params, self.buffer = make_functional_with_buffers(model)
+        # NOTE This is important to avoid the following error
+        # NotImplementedError: Cannot copy out of meta tensor; no data!
+        self.func = lambda p, x: func(p, self.buffer, x)
+        self.params = torch.nn.ParameterList(params)
+        for p in self.params:
+            p.requires_grad = False
+
+        self.device = device
+        # Copy the attributes from the image encoder.
+        self.train_preprocess = model.train_preprocess
+        self.val_preprocess = model.val_preprocess
+        self.cache_dir = model.cache_dir
+
+        dparams = []
+        for tv in task_vectors:
+            dp = [tv.vector[k].to(device) for k in tv.vector]
+            dparams.append(dp)
+
+        self.dparams = dparams
+        self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors),))
+
+    def __call__(self, x) -> torch.Tensor:
+        dparams = [sum([p * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
+        new_params = [dp + p for dp, p in zip(dparams, self.params)]
+        return self.func(new_params, x)
 
 def finetune(rank, args):
     setup_ddp(rank, args.world_size, port=args.port)
 
     train_dataset = args.train_dataset
-    ckpdir = os.path.join(args.save, f"{train_dataset}_coef")
 
     assert args.finetuning_mode in [
         "linear",
@@ -69,24 +108,15 @@ def finetune(rank, args):
     assert train_dataset is not None, "Please provide a training dataset."
 
     # Load the individual task vectors.
-    if train_dataset.startswith("MNIST"):
-        class_datasets = [
-            "0_MNIST",
-            "1_MNIST",
-            "2_MNIST",
-            "3_MNIST",
-            "4_MNIST",
-            "5_MNIST",
-            "6_MNIST",
-            "7_MNIST",
-            "8_MNIST",
-            "9_MNIST",
-        ]
-    else:
-        raise ValueError(f"The dataset {train_dataset} is not supported in this script.")
-    
+    pool = [
+        "Cars", "DTD", "EuroSAT", "GTSRB",
+        "MNIST", "RESISC45", "SUN397", "SVHN",
+    ]
+    orig_dataset = train_dataset.split('Val')[0]
+    if orig_dataset in pool:
+        pool.remove(orig_dataset)
     task_vectors = []
-    for dataset in class_datasets:
+    for dataset in pool:
         if args.finetuning_mode == "linear":
             pretrained_checkpoint = f"{args.save}/{dataset}Val/linear_zeroshot.pt"
             finetuned_checkpoint = f"{args.save}/{dataset}Val/linear_finetuned.pt"
@@ -94,16 +124,18 @@ def finetune(rank, args):
                 LinearizedTaskVector(pretrained_checkpoint, finetuned_checkpoint)
             )
         else:
-            raise NotImplementedError("Only the linear models are supported.")
-            # pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
-            # finetuned_checkpoint = f"{args.save}/{dataset}Val/finetuned.pt"
-            # task_vectors.append(
-            #     NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint)
-            # )
+            pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
+            finetuned_checkpoint = f"{args.save}/{dataset}Val/finetuned.pt"
+            task_vectors.append(
+                NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint)
+            )
 
     image_encoder = task_vectors[0].apply_to(pretrained_checkpoint, scaling_coef=0.0)
-    # HACK: Override the liearised model
-    image_encoder.model = LinearizedModel_(image_encoder.model, task_vectors)
+    # HACK: Override the image encoder
+    if args.finetuning_mode == "linear":
+        image_encoder.model = LinearizedModel_(image_encoder.model, task_vectors, device=rank)
+    else:
+        image_encoder = ImageEncoder_(image_encoder, task_vectors, device=rank)
 
     classification_head = get_classification_head(args, train_dataset)
     model = ImageClassifier(image_encoder, classification_head)
@@ -132,10 +164,7 @@ def finetune(rank, args):
         output_device=rank,
     )
 
-    if args.ls > 0:
-        loss_fn = LabelSmoothing(args.ls)
-    else:
-        loss_fn = torch.nn.CrossEntropyLoss()
+    loss_fn = softmax_entropy
 
     params = [p for p in ddp_model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
@@ -147,15 +176,18 @@ def finetune(rank, args):
         args.epochs * num_batches // args.num_grad_accumulation,
     )
 
+    if args.finetuning_mode == "linear":
+        coef = ddp_model.module.image_encoder.model.coef
+    else:
+        coef = ddp_model.module.image_encoder.coef
     for epoch in range(args.epochs):
         # Evaluate before each epoch
         if is_main_process():
             # We only need to evaluate the model on the first GPU.
             image_encoder = ddp_model.module.image_encoder
             eval_single_dataset(image_encoder, train_dataset, args)
-            coef = ddp_model.module.image_encoder.model.coef.data
             string = 'Coefficients:\t|'
-            for c in coef:
+            for c in coef.data:
                 string += f"`{c:.4f}`|"
             print(string)
 
@@ -171,12 +203,13 @@ def finetune(rank, args):
 
             batch = maybe_dictionarize(batch)
             inputs = batch["images"].cuda()
-            labels = batch["labels"].cuda()
+            # labels = batch["labels"].cuda()
             data_time = time.time() - start_time
 
             logits = ddp_model(inputs)
 
-            loss = loss_fn(logits, labels)
+            # loss = loss_fn(logits, labels)
+            loss = loss_fn(logits).mean(0)
 
             loss.backward()
 
@@ -205,9 +238,8 @@ def finetune(rank, args):
         # We only need to evaluate the model on the first GPU.
         image_encoder = ddp_model.module.image_encoder
         eval_single_dataset(image_encoder, train_dataset, args)
-        coef = ddp_model.module.image_encoder.model.coef.data
         string = 'Coefficients:\t|'
-        for c in coef:
+        for c in coef.data:
             string += f"`{c:.4f}`|"
         print(string)
 
@@ -216,10 +248,24 @@ def finetune(rank, args):
 
 if __name__ == "__main__":
     train_datasets = [
+        "Cars",
+        "DTD",
+        "EuroSAT",
+        "GTSRB",
         "MNIST",
+        "RESISC45",
+        "SUN397",
+        "SVHN",
     ]
     epochs = {
-        "MNIST": 5,
+        "Cars": 1,
+        "DTD": 1,
+        "EuroSAT": 1,
+        "GTSRB": 1,
+        "MNIST": 1,
+        "RESISC45": 1,
+        "SUN397": 1,
+        "SVHN": 1,
     }
 
     for dataset in train_datasets:
@@ -228,7 +274,7 @@ if __name__ == "__main__":
         # HACK: Some command line arguments are overwritten by defaults here.
         args.lr = 1e-2
         args.epochs = epochs[dataset]
-        args.train_dataset = dataset + "Val"
+        args.train_dataset = dataset
 
         # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
         args.batch_size = 64 if args.model == "ViT-L-14" else 128
