@@ -20,7 +20,8 @@ from src.datasets.registry import get_dataset
 from src.distributed import cleanup_ddp, distribute_loader, is_main_process, setup_ddp
 from src.eval import eval_single_dataset
 from src.heads import get_classification_head
-from src.modeling import ImageClassifier
+from src.modeling import ImageEncoder, ImageClassifier
+from src.linearize import LinearizedImageEncoder
 from src.task_vectors import LinearizedTaskVector, NonLinearTaskVector
 from src.utils import LabelSmoothing, cosine_lr
 
@@ -90,10 +91,38 @@ class ImageEncoder_(nn.Module):
         dparams = [sum([p * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
         new_params = [dp + p for dp, p in zip(dparams, self.params)]
         return self.func(new_params, x)
+    
+def main(rank, args):
 
-def finetune(rank, args):
-    setup_ddp(rank, args.world_size, port=args.port)
+    # Load the individual task vectors.
+    pool = [
+        "Cars", "DTD", "EuroSAT", "GTSRB",
+        "MNIST", "RESISC45", "SUN397", "SVHN",
+    ]
+    task_vectors = {}
+    for dataset in pool:
+        if args.finetuning_mode == "linear":
+            pretrained_checkpoint = f"{args.save}/{dataset}Val/linear_zeroshot.pt"
+            finetuned_checkpoint = f"{args.save}/{dataset}Val/linear_finetuned.pt"
+            task_vectors[dataset] = LinearizedTaskVector(pretrained_checkpoint, finetuned_checkpoint)
+        else:
+            pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
+            finetuned_checkpoint = f"{args.save}/{dataset}Val/finetuned.pt"
+            task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint)
 
+    args.rank = rank
+    for dataset in args.datasets:
+        args.epochs = args.datasets[dataset]
+        args.train_dataset = dataset
+        print("=" * 100)
+        print(f"Finetuning task vector coefficients of {args.model} on {dataset}")
+        print("=" * 100)
+
+        train(task_vectors, args)
+
+def train(task_vectors, args):
+
+    setup_ddp(args.rank, args.world_size, port=args.port)
     train_dataset = args.train_dataset
 
     assert args.finetuning_mode in [
@@ -107,35 +136,15 @@ def finetune(rank, args):
 
     assert train_dataset is not None, "Please provide a training dataset."
 
-    # Load the individual task vectors.
-    pool = [
-        "Cars", "DTD", "EuroSAT", "GTSRB",
-        "MNIST", "RESISC45", "SUN397", "SVHN",
-    ]
     orig_dataset = train_dataset.split('Val')[0]
-    if orig_dataset in pool:
-        pool.remove(orig_dataset)
-    task_vectors = []
-    for dataset in pool:
-        if args.finetuning_mode == "linear":
-            pretrained_checkpoint = f"{args.save}/{dataset}Val/linear_zeroshot.pt"
-            finetuned_checkpoint = f"{args.save}/{dataset}Val/linear_finetuned.pt"
-            task_vectors.append(
-                LinearizedTaskVector(pretrained_checkpoint, finetuned_checkpoint)
-            )
-        else:
-            pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
-            finetuned_checkpoint = f"{args.save}/{dataset}Val/finetuned.pt"
-            task_vectors.append(
-                NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint)
-            )
+    task_vectors = [v for k, v in task_vectors.items() if orig_dataset != k]
 
-    image_encoder = task_vectors[0].apply_to(pretrained_checkpoint, scaling_coef=0.0)
-    # HACK: Override the image encoder
     if args.finetuning_mode == "linear":
-        image_encoder.model = LinearizedModel_(image_encoder.model, task_vectors, device=rank)
+        image_encoder = LinearizedImageEncoder(args, keep_lang=False)
+        image_encoder.model = LinearizedModel_(image_encoder.model, task_vectors, device=args.rank)
     else:
-        image_encoder = ImageEncoder_(image_encoder, task_vectors, device=rank)
+        image_encoder = ImageEncoder(args)
+        image_encoder = ImageEncoder_(image_encoder, task_vectors, device=args.rank)
 
     classification_head = get_classification_head(args, train_dataset)
     model = ImageClassifier(image_encoder, classification_head)
@@ -159,9 +168,9 @@ def finetune(rank, args):
     ddp_loader = distribute_loader(data_loader)
     ddp_model = torch.nn.parallel.DistributedDataParallel(
         model,
-        device_ids=[rank],
-        find_unused_parameters=True,
-        output_device=rank,
+        device_ids=[args.rank],
+        find_unused_parameters=False,
+        output_device=args.rank,
     )
 
     loss_fn = softmax_entropy
@@ -247,17 +256,9 @@ def finetune(rank, args):
 
 
 if __name__ == "__main__":
-    train_datasets = [
-        "Cars",
-        "DTD",
-        "EuroSAT",
-        "GTSRB",
-        "MNIST",
-        "RESISC45",
-        "SUN397",
-        "SVHN",
-    ]
-    epochs = {
+
+    # dataset: epoch
+    datasets = {
         "Cars": 1,
         "DTD": 1,
         "EuroSAT": 1,
@@ -268,23 +269,16 @@ if __name__ == "__main__":
         "SVHN": 1,
     }
 
-    for dataset in train_datasets:
-        args = parse_arguments()
+    args = parse_arguments()
+    args.datasets = datasets
+    # HACK: Some command line arguments are overwritten by defaults here.
+    args.lr = 1e-2
+    # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
+    args.batch_size = 64 if args.model == "ViT-L-14" else 128
+    args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
 
-        # HACK: Some command line arguments are overwritten by defaults here.
-        args.lr = 1e-2
-        args.epochs = epochs[dataset]
-        args.train_dataset = dataset
-
-        # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
-        args.batch_size = 64 if args.model == "ViT-L-14" else 128
-        args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
-
-        if args.seed is not None:
-            args.save = f"checkpoints_{args.seed}/{args.model}"
-        else:
-            args.save = f"checkpoints/{args.model}"
-        print("=" * 100)
-        print(f"Finetuning task vector coefficients of {args.model} on {dataset}")
-        print("=" * 100)
-        torch.multiprocessing.spawn(finetune, args=(args,), nprocs=args.world_size)
+    if args.seed is not None:
+        args.save = f"checkpoints_{args.seed}/{args.model}"
+    else:
+        args.save = f"checkpoints/{args.model}"
+    torch.multiprocessing.spawn(main, args=(args,), nprocs=args.world_size)
