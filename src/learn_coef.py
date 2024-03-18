@@ -153,7 +153,6 @@ def train(task_vectors, args):
     model = model.cuda()
 
     preprocess_fn = model.train_preprocess
-    print_every = 100
 
     dataset = get_dataset(
         train_dataset,
@@ -232,7 +231,7 @@ def train(task_vectors, args):
             batch_time = time.time() - start_time
 
             if (
-                step % print_every == 0
+                step % args.print_every == 0
                 and ((i + 1) % args.num_grad_accumulation == 0)
                 and is_main_process()
             ):
@@ -272,10 +271,11 @@ if __name__ == "__main__":
     args = parse_arguments()
     args.datasets = datasets
     # HACK: Some command line arguments are overwritten by defaults here.
-    args.lr = 1e-2
+    args.lr = 5e-3
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 64 if args.model == "ViT-L-14" else 128
     args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
+    args.print_every = 10
 
     if args.seed is not None:
         args.save = f"checkpoints_{args.seed}/{args.model}"
