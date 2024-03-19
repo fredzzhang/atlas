@@ -129,7 +129,7 @@ def main(rank, args):
     args.rank = rank
     for dataset in args.datasets:
         args.epochs = args.datasets[dataset]
-        args.train_dataset = dataset
+        args.test_dataset = dataset
         print("=" * 100)
         print(f"Finetuning task vector coefficients of {args.model} on {dataset}")
         print("=" * 100)
@@ -139,8 +139,8 @@ def main(rank, args):
 def train(task_vectors, args):
 
     setup_ddp(args.rank, args.world_size, port=args.port)
-    train_dataset = args.train_dataset
-    ckpdir = os.path.join(args.save, train_dataset)
+    test_dataset = args.test_dataset
+    ckpdir = os.path.join(args.save, test_dataset)
     os.makedirs(ckpdir, exist_ok=True)
 
     assert args.finetuning_mode in [
@@ -152,9 +152,7 @@ def train(task_vectors, args):
     if linearized_finetuning:
         print("Using linearized fine-tuning.")
 
-    assert train_dataset is not None, "Please provide a training dataset."
-
-    orig_dataset = train_dataset.split('Val')[0]
+    orig_dataset = test_dataset.split('Val')[0]
     task_vectors = [v for k, v in task_vectors.items() if orig_dataset != k]
 
     if args.finetuning_mode == "linear":
@@ -168,22 +166,22 @@ def train(task_vectors, args):
         if args.load is not None and args.load.endswith("pt"):
             image_encoder.coef.load_state_dict(torch.load(args.load).state_dict())
 
-    classification_head = get_classification_head(args, train_dataset)
+    classification_head = get_classification_head(args, test_dataset)
     model = ImageClassifier(image_encoder, classification_head)
 
     model.freeze_head()
     model = model.cuda()
 
-    preprocess_fn = model.train_preprocess
+    preprocess_fn = model.val_preprocess
 
     dataset = get_dataset(
-        train_dataset,
+        test_dataset,
         preprocess_fn,
         location=args.data_location,
         batch_size=args.batch_size,
     )
-    data_loader = get_dataloader(dataset, is_train=True, args=args, image_encoder=None)
-    num_batches = len(dataset.train_loader)
+    data_loader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
+    num_batches = len(dataset.test_loader)
 
     # Distribute the data and model across the GPUs.
     ddp_loader = distribute_loader(data_loader)
@@ -194,7 +192,10 @@ def train(task_vectors, args):
         output_device=args.rank,
     )
 
-    loss_fn = softmax_entropy
+    loss_fn = {
+        'entropy': softmax_entropy,
+        'cross_entropy': torch.nn.CrossEntropyLoss()
+    }[args.loss_fn]
 
     params = [p for p in ddp_model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
@@ -206,14 +207,13 @@ def train(task_vectors, args):
         args.epochs * num_batches // args.num_grad_accumulation,
     )
 
+    ddp_model.eval()
     for epoch in range(args.epochs):
         # Evaluate before each epoch
         if is_main_process():
             # We only need to evaluate the model on the first GPU.
             image_encoder = ddp_model.module.image_encoder
-            eval_single_dataset(image_encoder, train_dataset, args)
-
-        ddp_model.train()
+            eval_single_dataset(image_encoder, test_dataset, args)
 
         for i, batch in enumerate(ddp_loader):
             start_time = time.time()
@@ -225,13 +225,15 @@ def train(task_vectors, args):
 
             batch = maybe_dictionarize(batch)
             inputs = batch["images"].cuda()
-            # labels = batch["labels"].cuda()
             data_time = time.time() - start_time
 
             logits = ddp_model(inputs)
 
-            # loss = loss_fn(logits, labels)
-            loss = loss_fn(logits).mean(0)
+            if args.loss_fn == 'cross_entropy':
+                labels = batch["labels"].cuda()
+                loss = loss_fn(logits, labels)
+            else:
+                loss = loss_fn(logits).mean(0)
 
             loss.backward()
 
@@ -249,17 +251,23 @@ def train(task_vectors, args):
                 and ((i + 1) % args.num_grad_accumulation == 0)
                 and is_main_process()
             ):
-                percent_complete = 100 * i / len(ddp_loader)
+                percent_complete = 100 * (i + 1) / len(ddp_loader)
                 print(
-                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i}/{len(dataset.train_loader)}]\t"  # noqa: E501
-                    f"Loss: {loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",  # noqa: E501
+                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(dataset.test_loader)}]\t"
+                    f"Loss: {loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",
                     flush=True,
                 )
 
+    percent_complete = 100 * (i + 1) / len(ddp_loader)
+    print(
+        f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(dataset.test_loader)}]\t"
+        f"Loss: {loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",
+        flush=True,
+    )
     if is_main_process():
         # We only need to evaluate the model on the first GPU.
         image_encoder = ddp_model.module.image_encoder
-        eval_single_dataset(image_encoder, train_dataset, args)
+        eval_single_dataset(image_encoder, test_dataset, args)
         if linearized_finetuning:
             head_path = os.path.join(ckpdir, "linear_coef_head.pt")
             coef = ddp_model.module.image_encoder.model.coef
@@ -273,13 +281,13 @@ def train(task_vectors, args):
 
 if __name__ == "__main__":
 
-    # dataset: epoch
+    # Epochs w/ lr=1e-4 for entropy objective
     datasets = {
         "Cars": 1,
-        "DTD": 1,
-        "EuroSAT": 1,
+        "DTD": 5,
+        "EuroSAT": 6,
         "GTSRB": 1,
-        "MNIST": 1,
+        "MNIST": 4,
         "RESISC45": 1,
         "SUN397": 1,
         "SVHN": 1,
@@ -288,7 +296,7 @@ if __name__ == "__main__":
     args = parse_arguments()
     args.datasets = datasets
     # HACK: Some command line arguments are overwritten by defaults here.
-    args.lr = 5e-3
+    args.lr = 1e-4
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 64 if args.model == "ViT-L-14" else 128
     args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
