@@ -111,7 +111,7 @@ def main(rank, args):
     args.rank = rank
     for dataset in args.datasets:
         args.epochs = args.datasets[dataset]
-        args.train_dataset = dataset
+        args.test_dataset = dataset
         print("=" * 100)
         print(f"Finetuning task vector coefficients of {args.model} on {dataset}")
         print("=" * 100)
@@ -121,7 +121,7 @@ def main(rank, args):
 def train(task_vectors, args):
 
     setup_ddp(args.rank, args.world_size, port=args.port)
-    train_dataset = args.train_dataset
+    test_dataset = args.test_dataset
 
     assert args.finetuning_mode in [
         "linear",
@@ -132,9 +132,7 @@ def train(task_vectors, args):
     if linearized_finetuning:
         print("Using linearized fine-tuning.")
 
-    assert train_dataset is not None, "Please provide a training dataset."
-
-    orig_dataset = train_dataset.split('Val')[0]
+    orig_dataset = test_dataset.split('Val')[0]
     task_vectors = [v for k, v in task_vectors.items() if orig_dataset != k]
 
     if args.finetuning_mode == "linear":
@@ -144,16 +142,16 @@ def train(task_vectors, args):
         image_encoder = ImageEncoder(args)
         image_encoder = ImageEncoder_(image_encoder, task_vectors, device=args.rank)
 
-    classification_head = get_classification_head(args, train_dataset)
+    classification_head = get_classification_head(args, test_dataset)
     model = ImageClassifier(image_encoder, classification_head)
 
     model.freeze_head()
     model = model.cuda()
 
-    preprocess_fn = model.train_preprocess
+    preprocess_fn = model.val_preprocess
 
     dataset = get_dataset(
-        train_dataset,
+        test_dataset,
         preprocess_fn,
         location=args.data_location,
         batch_size=args.batch_size,
@@ -161,7 +159,7 @@ def train(task_vectors, args):
     data_loader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
     # Override shuffle to True
     data_loader.shuffle = True
-    num_batches = len(dataset.train_loader)
+    num_batches = len(dataset.test_loader)
 
     # Distribute the data and model across the GPUs.
     ddp_loader = distribute_loader(data_loader)
@@ -191,18 +189,19 @@ def train(task_vectors, args):
         coef = ddp_model.module.image_encoder.model.coef
     else:
         coef = ddp_model.module.image_encoder.coef
+
+    ddp_model.eval()
     for epoch in range(args.epochs):
         # Evaluate before each epoch
         if is_main_process():
             # We only need to evaluate the model on the first GPU.
             image_encoder = ddp_model.module.image_encoder
-            eval_single_dataset(image_encoder, train_dataset, args)
+            eval_single_dataset(image_encoder, test_dataset, args)
             string = 'Coefficients:\t|'
             for c in coef.data:
                 string += f"`{c:.4f}`|"
             print(string)
 
-        ddp_model.train()
 
         for i, batch in enumerate(ddp_loader):
             start_time = time.time()
@@ -240,17 +239,23 @@ def train(task_vectors, args):
                 and ((i + 1) % args.num_grad_accumulation == 0)
                 and is_main_process()
             ):
-                percent_complete = 100 * i / len(ddp_loader)
+                percent_complete = 100 * (i + 1) / len(ddp_loader)
                 print(
-                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i}/{len(dataset.test_loader)}]\t"  # noqa: E501
+                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(dataset.test_loader)}]\t"  # noqa: E501
                     f"Loss: {loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",  # noqa: E501
                     flush=True,
                 )
 
+    percent_complete = 100 * (i + 1) / len(ddp_loader)
+    print(
+        f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(dataset.test_loader)}]\t"  # noqa: E501
+        f"Loss: {loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",  # noqa: E501
+        flush=True,
+    )
     if is_main_process():
         # We only need to evaluate the model on the first GPU.
         image_encoder = ddp_model.module.image_encoder
-        eval_single_dataset(image_encoder, train_dataset, args)
+        eval_single_dataset(image_encoder, test_dataset, args)
         string = 'Coefficients:\t|'
         for c in coef.data:
             string += f"`{c:.4f}`|"
@@ -261,24 +266,17 @@ def train(task_vectors, args):
 
 if __name__ == "__main__":
 
-    # Optimial epochs w/ lr=1e-2 for entropy objective
+    # Epochs w/ lr=1e-2 for entropy objective
     datasets = {
-        "Cars": 1, "DTD": 3,
-        "EuroSAT": 3, "GTSRB": 1,
-        "MNIST": 2, "RESISC45": 1,
-        "SUN397": 1, "SVHN": 1,
+        "Cars": 1,
+        "DTD": 3,
+        "EuroSAT": 6,
+        "GTSRB": 1,
+        "MNIST": 4,
+        "RESISC45": 1,
+        "SUN397": 1,
+        "SVHN": 1,
     }
-
-    # datasets = {
-        # "Cars": 5,
-        # "DTD": 3,
-        # "EuroSAT": 3,
-        # "GTSRB": 1,
-        # "MNIST": 2,
-        # "RESISC45": 1,
-        # "SUN397": 1,
-        # "SVHN": 1,
-    # }
 
     args = parse_arguments()
     args.datasets = datasets
