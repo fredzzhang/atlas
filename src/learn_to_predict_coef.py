@@ -6,6 +6,7 @@ Fred Zhang <frederic.zhang@adelaide.edu.au>
 Australian Institute for Machine Learning
 """
 
+import os
 import time
 
 import torch
@@ -139,6 +140,8 @@ def train(task_vectors, args):
 
     setup_ddp(args.rank, args.world_size, port=args.port)
     train_dataset = args.train_dataset
+    ckpdir = os.path.join(args.save, train_dataset)
+    os.makedirs(ckpdir, exist_ok=True)
 
     assert args.finetuning_mode in [
         "linear",
@@ -157,9 +160,13 @@ def train(task_vectors, args):
     if args.finetuning_mode == "linear":
         image_encoder = LinearizedImageEncoder(args, keep_lang=False)
         image_encoder.model = LinearizedModel_(image_encoder.model, task_vectors, device=args.rank)
+        if args.load is not None and args.load.endswith("pt"):
+            image_encoder.model.coef.load_state_dict(torch.load(args.load).state_dict())
     else:
         image_encoder = ImageEncoder(args)
         image_encoder = ImageEncoder_(image_encoder, task_vectors, device=args.rank)
+        if args.load is not None and args.load.endswith("pt"):
+            image_encoder.coef.load_state_dict(torch.load(args.load).state_dict())
 
     classification_head = get_classification_head(args, train_dataset)
     model = ImageClassifier(image_encoder, classification_head)
@@ -199,20 +206,12 @@ def train(task_vectors, args):
         args.epochs * num_batches // args.num_grad_accumulation,
     )
 
-    if args.finetuning_mode == "linear":
-        coef = ddp_model.module.image_encoder.model.coef
-    else:
-        coef = ddp_model.module.image_encoder.coef
     for epoch in range(args.epochs):
         # Evaluate before each epoch
         if is_main_process():
             # We only need to evaluate the model on the first GPU.
             image_encoder = ddp_model.module.image_encoder
             eval_single_dataset(image_encoder, train_dataset, args)
-            string = 'Coefficients:\t|'
-            for c in coef.data:
-                string += f"`{c:.4f}`|"
-            print(string)
 
         ddp_model.train()
 
@@ -261,10 +260,13 @@ def train(task_vectors, args):
         # We only need to evaluate the model on the first GPU.
         image_encoder = ddp_model.module.image_encoder
         eval_single_dataset(image_encoder, train_dataset, args)
-        string = 'Coefficients:\t|'
-        for c in coef.data:
-            string += f"`{c:.4f}`|"
-        print(string)
+        if linearized_finetuning:
+            head_path = os.path.join(ckpdir, "linear_coef_head.pt")
+            coef = ddp_model.module.image_encoder.model.coef
+        else:
+            head_path = os.path.join(ckpdir, "coef_head.pt")
+            coef = ddp_model.module.image_encoder.coef
+        torch.save(coef, head_path)
 
     cleanup_ddp()
 
