@@ -1,13 +1,11 @@
-"""
-Given an objective,
-learn the coefficients on task vectors
+"""Given an objective,
+learn the coefficients on task vectors for a dataset
 and find the optimal combination.
 
 Fred Zhang <frederic.zhang@adelaide.edu.au>
 Australian Institute for Machine Learning
 """
 
-import os
 import time
 
 import torch
@@ -23,7 +21,7 @@ from src.heads import get_classification_head
 from src.modeling import ImageEncoder, ImageClassifier
 from src.linearize import LinearizedImageEncoder
 from src.task_vectors import LinearizedTaskVector, NonLinearTaskVector
-from src.utils import LabelSmoothing, cosine_lr
+from src.utils import cosine_lr
 
 @torch.jit.script
 def softmax_entropy(x: torch.Tensor) -> torch.Tensor:
@@ -160,7 +158,9 @@ def train(task_vectors, args):
         location=args.data_location,
         batch_size=args.batch_size,
     )
-    data_loader = get_dataloader(dataset, is_train=True, args=args, image_encoder=None)
+    data_loader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
+    # Override shuffle to True
+    data_loader.shuffle = True
     num_batches = len(dataset.train_loader)
 
     # Distribute the data and model across the GPUs.
@@ -172,7 +172,10 @@ def train(task_vectors, args):
         output_device=args.rank,
     )
 
-    loss_fn = softmax_entropy
+    loss_fn = {
+        'entropy': softmax_entropy,
+        'cross_entropy': torch.nn.CrossEntropyLoss()
+    }[args.loss_fn]
 
     params = [p for p in ddp_model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
@@ -211,13 +214,15 @@ def train(task_vectors, args):
 
             batch = maybe_dictionarize(batch)
             inputs = batch["images"].cuda()
-            # labels = batch["labels"].cuda()
             data_time = time.time() - start_time
 
             logits = ddp_model(inputs)
 
-            # loss = loss_fn(logits, labels)
-            loss = loss_fn(logits).mean(0)
+            if args.loss_fn == 'cross_entropy':
+                labels = batch["labels"].cuda()
+                loss = loss_fn(logits, labels)
+            else:
+                loss = loss_fn(logits).mean(0)
 
             loss.backward()
 
@@ -237,7 +242,7 @@ def train(task_vectors, args):
             ):
                 percent_complete = 100 * i / len(ddp_loader)
                 print(
-                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i}/{len(dataset.train_loader)}]\t"  # noqa: E501
+                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i}/{len(dataset.test_loader)}]\t"  # noqa: E501
                     f"Loss: {loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",  # noqa: E501
                     flush=True,
                 )
@@ -256,22 +261,29 @@ def train(task_vectors, args):
 
 if __name__ == "__main__":
 
-    # dataset: epoch
+    # Optimial epochs w/ lr=1e-2 for entropy objective
     datasets = {
-        "Cars": 1,
-        "DTD": 1,
-        "EuroSAT": 1,
-        "GTSRB": 1,
-        "MNIST": 1,
-        "RESISC45": 1,
-        "SUN397": 1,
-        "SVHN": 1,
+        "Cars": 1, "DTD": 3,
+        "EuroSAT": 3, "GTSRB": 1,
+        "MNIST": 2, "RESISC45": 1,
+        "SUN397": 1, "SVHN": 1,
     }
+
+    # datasets = {
+        # "Cars": 5,
+        # "DTD": 3,
+        # "EuroSAT": 3,
+        # "GTSRB": 1,
+        # "MNIST": 2,
+        # "RESISC45": 1,
+        # "SUN397": 1,
+        # "SVHN": 1,
+    # }
 
     args = parse_arguments()
     args.datasets = datasets
     # HACK: Some command line arguments are overwritten by defaults here.
-    args.lr = 5e-3
+    args.lr = 1e-2
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 64 if args.model == "ViT-L-14" else 128
     args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1

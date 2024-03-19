@@ -36,6 +36,13 @@ def parse_arguments():
         help="Evaluate on the full dataset, when the model is trained on one class."
     )
     parser.add_argument(
+        "--loss-fn",
+        default='entropy',
+        type=str,
+        help="Loss function to use.",
+        choices=["entropy", "cross_entropy"]
+    )
+    parser.add_argument(
         "--train-dataset",
         default=None,
         type=lambda x: x.split(","),
