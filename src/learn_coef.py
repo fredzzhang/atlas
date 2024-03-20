@@ -6,6 +6,7 @@ Fred Zhang <frederic.zhang@adelaide.edu.au>
 Australian Institute for Machine Learning
 """
 
+import os
 import time
 
 import torch
@@ -83,10 +84,10 @@ class ImageEncoder_(nn.Module):
             dparams.append(dp)
 
         self.dparams = dparams
-        self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors),))
+        self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params)))
 
     def __call__(self, x) -> torch.Tensor:
-        dparams = [sum([p * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
+        dparams = [sum([p * c[i] for p, c in zip(dp, self.coef)]) for i, dp in enumerate(zip(*self.dparams))]
         new_params = [dp + p for dp, p in zip(dparams, self.params)]
         return self.func(new_params, x)
     
@@ -122,6 +123,8 @@ def train(task_vectors, args):
 
     setup_ddp(args.rank, args.world_size, port=args.port)
     test_dataset = args.test_dataset
+    ckpdir = os.path.join(args.save, test_dataset)
+    os.makedirs(ckpdir, exist_ok=True)
 
     assert args.finetuning_mode in [
         "linear",
@@ -199,7 +202,7 @@ def train(task_vectors, args):
             eval_single_dataset(image_encoder, test_dataset, args)
             string = 'Coefficients:\t|'
             for c in coef.data:
-                string += f"`{c:.4f}`|"
+                string += f"`{c.mean().item():.4f}`|"
             print(string)
 
 
@@ -258,8 +261,15 @@ def train(task_vectors, args):
         eval_single_dataset(image_encoder, test_dataset, args)
         string = 'Coefficients:\t|'
         for c in coef.data:
-            string += f"`{c:.4f}`|"
+            string += f"`{c.mean().item():.4f}`|"
         print(string)
+        if linearized_finetuning:
+            head_path = os.path.join(ckpdir, "linear_layer_coef_.pt")
+            coef = ddp_model.module.image_encoder.model.coef
+        else:
+            head_path = os.path.join(ckpdir, "layer_coef.pt")
+            coef = ddp_model.module.image_encoder.coef
+        torch.save(coef, head_path)
 
     cleanup_ddp()
 
@@ -271,9 +281,9 @@ if __name__ == "__main__":
         "Cars": 1,
         "DTD": 3,
         "EuroSAT": 6,
-        "GTSRB": 1,
-        "MNIST": 4,
-        "RESISC45": 1,
+        "GTSRB": 3,
+        "MNIST": 10,
+        "RESISC45": 2,
         "SUN397": 1,
         "SVHN": 1,
     }
