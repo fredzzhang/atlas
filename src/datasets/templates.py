@@ -264,6 +264,10 @@ cub200_template = [
     lambda c: f"a photo of a {c}, a type of bird."
 ]
 
+voc2007_template = [
+    lambda c: f"a photo of a {c}."
+]
+
 dataset_to_template = {
     'Cars': cars_template,
     'CIFAR10': cifar10_template,
@@ -282,7 +286,8 @@ dataset_to_template = {
     'FGVCAircraft': fgvc_template,
     'Flowers102': flowers102_template,
     'OxfordIIITPet': pet_template,
-    'CUB2002011': cub200_template
+    'CUB200': cub200_template,
+    'PascalVOC': voc2007_template,
 }
 
 

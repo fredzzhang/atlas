@@ -11,7 +11,7 @@ from torchvision.datasets.folder import default_loader
 from torchvision.datasets.utils import download_url
 from torch.utils.data import Dataset
 
-class CUB2002011:
+class CUB200:
     def __init__(self,
                  preprocess,
                  location=os.path.expanduser('~/data'),
