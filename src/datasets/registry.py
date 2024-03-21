@@ -35,6 +35,7 @@ from src.datasets.flowers import Flowers102, Flowers102Val
 from src.datasets.oxford_pets import OxfordIIITPet
 from src.datasets.cub2011 import CUB200
 from src.datasets.voc2007 import PascalVOC, PascalVOCVal
+from src.datasets.country211 import Country211, Country211Val
 
 registry = {
     name: obj for name, obj in inspect.getmembers(sys.modules[__name__], inspect.isclass)

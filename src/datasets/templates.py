@@ -268,6 +268,14 @@ voc2007_template = [
     lambda c: f"a photo of a {c}."
 ]
 
+country211_template = [
+    lambda c: f"a photo i took in {c}.",
+    lambda c: f"a photo i took while visiting {c}.",
+    lambda c: f"a photo from my home country of {c}.",
+    lambda c: f"a photo from my visit to {c}.",
+    lambda c: f"a photo showing the country of {c}."
+]
+
 dataset_to_template = {
     'Cars': cars_template,
     'CIFAR10': cifar10_template,
@@ -288,6 +296,7 @@ dataset_to_template = {
     'OxfordIIITPet': pet_template,
     'CUB200': cub200_template,
     'PascalVOC': voc2007_template,
+    'Country211': country211_template,
 }
 
 

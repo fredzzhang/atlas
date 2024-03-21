@@ -251,9 +251,10 @@ class PASCALVoc2007Cropped(data.Dataset):
     def __len__(self):
         return len(self.bndboxes)
 
-class PascalVOC:
+class PascalVOCBase:
     def __init__(self,
                  preprocess,
+                 test_split,
                  location=os.path.expanduser('~/data'),
                  batch_size=32,
                  num_workers=16):
@@ -265,7 +266,7 @@ class PascalVOC:
             num_workers=num_workers,
         )
 
-        self.test_dataset = PASCALVoc2007Cropped(location, 'test', transform=preprocess, download=True)
+        self.test_dataset = PASCALVoc2007Cropped(location, test_split, transform=preprocess, download=True)
         self.test_loader = torch.utils.data.DataLoader(
             self.test_dataset,
             batch_size=batch_size,
@@ -277,28 +278,18 @@ class PascalVOC:
                             'motorbike', 'person', 'potted plant',
                             'sheep', 'sofa', 'train', 'tv monitor']
 
-class PascalVOCVal:
+class PascalVOC(PascalVOCBase):
     def __init__(self,
                  preprocess,
                  location=os.path.expanduser('~/data'),
                  batch_size=32,
                  num_workers=16):
-        self.train_dataset = PASCALVoc2007Cropped(location, 'train', transform=preprocess, download=True)
-        self.train_loader = torch.utils.data.DataLoader(
-            self.train_dataset,
-            shuffle=True,
-            batch_size=batch_size,
-            num_workers=num_workers,
-        )
+        super().__init__(preprocess, "test", location, batch_size, num_workers)
 
-        self.test_dataset = PASCALVoc2007Cropped(location, 'val', transform=preprocess, download=True)
-        self.test_loader = torch.utils.data.DataLoader(
-            self.test_dataset,
-            batch_size=batch_size,
-            num_workers=num_workers
-        )
-        self.classnames = ['aeroplane', 'bicycle', 'bird', 'boat',
-                            'bottle', 'bus', 'car', 'cat', 'chair',
-                            'cow', 'dining table', 'dog', 'horse',
-                            'motorbike', 'person', 'potted plant',
-                            'sheep', 'sofa', 'train', 'tv monitor']
+class PascalVOCVal(PascalVOCBase):
+    def __init__(self,
+                 preprocess,
+                 location=os.path.expanduser('~/data'),
+                 batch_size=32,
+                 num_workers=16):
+        super().__init__(preprocess, "val", location, batch_size, num_workers)
