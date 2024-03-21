@@ -28,6 +28,14 @@ from src.datasets.resisc45 import RESISC45
 from src.datasets.stl10 import STL10
 from src.datasets.svhn import SVHN
 from src.datasets.sun397 import SUN397
+from src.datasets.food import Food101
+from src.datasets.caltech import Caltech256
+from src.datasets.fgvc_aircraft import FGVCAircraft, FGVCAircraftVal
+from src.datasets.flowers import Flowers102, Flowers102Val
+from src.datasets.oxford_pets import OxfordIIITPet
+from src.datasets.cub2011 import CUB200
+from src.datasets.voc2007 import PascalVOC, PascalVOCVal
+from src.datasets.country211 import Country211, Country211Val
 
 registry = {
     name: obj for name, obj in inspect.getmembers(sys.modules[__name__], inspect.isclass)
