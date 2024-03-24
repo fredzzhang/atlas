@@ -60,7 +60,7 @@ class LinearizedModel_(nn.Module):
         return out + dp
     
 class ImageEncoder_(nn.Module):
-    def __init__(self, model, task_vectors, device) -> None:
+    def __init__(self, model, task_vectors, device, layerwise=True) -> None:
         """A wrapper class to enable compositions of task vectors"""
         super().__init__()
 
@@ -84,10 +84,18 @@ class ImageEncoder_(nn.Module):
             dparams.append(dp)
 
         self.dparams = dparams
-        self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params)))
+
+        self.layerwise = layerwise
+        if layerwise:
+            self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params)))
+        else:
+            self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors),))
 
     def __call__(self, x) -> torch.Tensor:
-        dparams = [sum([p * c[i] for p, c in zip(dp, self.coef)]) for i, dp in enumerate(zip(*self.dparams))]
+        if self.layerwise:
+            dparams = [sum([p * c[i] for p, c in zip(dp, self.coef)]) for i, dp in enumerate(zip(*self.dparams))]
+        else:
+            dparams = [sum([p * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
         new_params = [dp + p for dp, p in zip(dparams, self.params)]
         return self.func(new_params, x)
     
