@@ -91,6 +91,7 @@ def finetune(rank, args):
         preprocess_fn,
         location=args.data_location,
         batch_size=args.batch_size,
+        num_workers=args.num_workers,
     )
     data_loader = get_dataloader(dataset, is_train=True, args=args, image_encoder=None)
     num_batches = len(dataset.train_loader)
@@ -129,9 +130,14 @@ def finetune(rank, args):
         )
         ddp_model.module.image_encoder.save(model_path)
 
+
+    # Test the model at the start
+    image_encoder = ddp_model.module.image_encoder
+    eval_single_dataset(image_encoder, train_dataset, args)
     for epoch in range(args.epochs):
         ddp_model.train()
 
+        ddp_loader.sampler.set_epoch(epoch)
         for i, batch in enumerate(ddp_loader):
             start_time = time.time()
 
@@ -207,32 +213,31 @@ def finetune(rank, args):
 
 
 if __name__ == "__main__":
-    train_datasets = [
-        # "Cars",
-        # "DTD",
-        # "EuroSAT",
-        # "GTSRB",
-        # "MNIST",
-        # "RESISC45",
-        # "SUN397",
-        # "SVHN",
-        "01234_MNIST",
-        "56789_MNIST",
-    ]
+
     epochs = {
-        # "Cars": 35,
-        # "DTD": 76,
-        # "EuroSAT": 12,
-        # "GTSRB": 11,
-        # "MNIST": 5,
-        # "RESISC45": 15,
-        # "SUN397": 14,
-        # "SVHN": 4,
-        "01234_MNIST": 5,
-        "56789_MNIST": 5,
+        "Cars": 35,
+        "DTD": 76,
+        "EuroSAT": 12,
+        "GTSRB": 11,
+        "MNIST": 5,
+        "RESISC45": 15,
+        "SUN397": 14,
+        "SVHN": 4,
+        "CIFAR10": 5,
+        "CIFAR100": 6,
+        "ImageNet": 10,
+        "STL10": 4,
+        "Food101": 15,
+        "Caltech256": 8,
+        "FGVCAircraft": 60,
+        "Flowers102": 40,
+        "OxfordIIITPet": 5,
+        "CUB200": 20,
+        "PascalVOC": 10,
+        "Country211": 15
     }
 
-    for dataset in train_datasets:
+    for dataset in epochs:
         args = parse_arguments()
 
         # HACK: Some command line arguments are overwritten by defaults here.
@@ -242,6 +247,7 @@ if __name__ == "__main__":
 
         # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
         args.batch_size = 64 if args.model == "ViT-L-14" else 128
+        args.num_workers = 4
         args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
 
         if args.seed is not None:
