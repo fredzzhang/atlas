@@ -10,6 +10,7 @@ import time
 
 import torch
 import torch.nn as nn
+from torch.cuda.amp import GradScaler
 from functorch import jvp, make_functional_with_buffers
 
 from src.args import parse_arguments
@@ -113,7 +114,10 @@ def main(rank, args):
 
     args.rank = rank
     n = len(args.datasets)
-    acc = torch.zeros(n, n)
+    if os.path.exists(os.path.join(args.save, "pairwise_acc.pt")):
+        acc = torch.load(os.path.join(args.save, "pairwise_acc.pt"))
+    else:
+        acc = torch.zeros(n, n)
     for i, tgt_dataset in enumerate(args.datasets):
         for j, src_dataset in enumerate(args.datasets):
             if src_dataset == tgt_dataset:
@@ -128,7 +132,7 @@ def main(rank, args):
             best_acc = train([task_vectors[src_dataset],], args)
             acc[i, j] = best_acc
 
-    torch.save(acc.cpu(), os.path.join(args.save, "pairwise_acc.pt"))
+            torch.save(acc, os.path.join(args.save, "pairwise_acc.pt"))
 
 def train(task_vectors, args):
 
@@ -205,12 +209,14 @@ def train(task_vectors, args):
 
     best_acc = 0
     ddp_model.eval()
+    scaler = GradScaler()
     for epoch in range(args.epochs):
         # Evaluate before each epoch
         if is_main_process():
             # We only need to evaluate the model on the first GPU.
             image_encoder = ddp_model.module.image_encoder
-            acc = eval_single_dataset(image_encoder, tgt_dataset, args)["top1"]
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                acc = eval_single_dataset(image_encoder, tgt_dataset, args)["top1"]
             if acc > best_acc:
                 best_acc = acc
                 best_epoch = epoch
@@ -228,22 +234,23 @@ def train(task_vectors, args):
             batch = maybe_dictionarize(batch)
             inputs = batch["images"].cuda()
             data_time = time.time() - start_time
+            
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                logits = ddp_model(inputs)
+                if args.loss_fn == 'cross_entropy':
+                    labels = batch["labels"].cuda()
+                    loss = loss_fn(logits, labels)
+                else:
+                    loss = loss_fn(logits).mean(0)
 
-            logits = ddp_model(inputs)
-
-            if args.loss_fn == 'cross_entropy':
-                labels = batch["labels"].cuda()
-                loss = loss_fn(logits, labels)
-            else:
-                loss = loss_fn(logits).mean(0)
-
-            loss.backward()
+            scaler.scale(loss).backward()
 
             if (i + 1) % args.num_grad_accumulation == 0:
                 scheduler(step)
 
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
                 optimizer.zero_grad()
 
             batch_time = time.time() - start_time
@@ -269,7 +276,8 @@ def train(task_vectors, args):
     if is_main_process():
         # We only need to evaluate the model on the first GPU.
         image_encoder = ddp_model.module.image_encoder
-        acc = eval_single_dataset(image_encoder, tgt_dataset, args)["top1"]
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
+            acc = eval_single_dataset(image_encoder, tgt_dataset, args)["top1"]
         if acc > best_acc:
             best_acc = acc
             best_epoch = epoch
