@@ -112,8 +112,10 @@ def main(rank, args):
             task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint)
 
     args.rank = rank
-    for tgt_dataset in ["Cars"]:
-        for src_dataset in args.datasets:
+    n = len(args.datasets)
+    acc = torch.zeros(n, n)
+    for i, tgt_dataset in enumerate(args.datasets):
+        for j, src_dataset in enumerate(args.datasets):
             if src_dataset == tgt_dataset:
                 continue
             args.epochs = args.datasets[tgt_dataset]
@@ -123,7 +125,10 @@ def main(rank, args):
             print(f"Learning coefficients for {tgt_dataset} using task vector from {src_dataset}")
             print("=" * 100)
 
-            train([task_vectors[src_dataset],], args)
+            best_acc = train([task_vectors[src_dataset],], args)
+            acc[i, j] = best_acc
+
+    torch.save(acc.cpu(), os.path.join(args.save, "pairwise_acc.pt"))
 
 def train(task_vectors, args):
 
@@ -193,16 +198,23 @@ def train(task_vectors, args):
 
     if args.finetuning_mode == "linear":
         coef = ddp_model.module.image_encoder.model.coef
+        coef_path = os.path.join(ckpdir, f"linear_{args.src_dataset}_for_{tgt_dataset}_.pt")
     else:
         coef = ddp_model.module.image_encoder.coef
+        coef_path = os.path.join(ckpdir, f"{args.src_dataset}_for_{tgt_dataset}_.pt")
 
+    best_acc = 0
     ddp_model.eval()
     for epoch in range(args.epochs):
         # Evaluate before each epoch
         if is_main_process():
             # We only need to evaluate the model on the first GPU.
             image_encoder = ddp_model.module.image_encoder
-            eval_single_dataset(image_encoder, tgt_dataset, args)
+            acc = eval_single_dataset(image_encoder, tgt_dataset, args)["top1"]
+            if acc > best_acc:
+                best_acc = acc
+                best_epoch = epoch
+                torch.save(coef, coef_path)
 
         ddp_loader.sampler.set_epoch(epoch)
         for i, batch in enumerate(ddp_loader):
@@ -243,56 +255,54 @@ def train(task_vectors, args):
             ):
                 percent_complete = 100 * (i + 1) / len(ddp_loader)
                 print(
-                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(dataset.test_loader)}]\t"  # noqa: E501
+                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(dataset.train_loader)}]\t"  # noqa: E501
                     f"Loss: {loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",  # noqa: E501
                     flush=True,
                 )
 
     percent_complete = 100 * (i + 1) / len(ddp_loader)
     print(
-        f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(dataset.test_loader)}]\t"  # noqa: E501
+        f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(dataset.train_loader)}]\t"  # noqa: E501
         f"Loss: {loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",  # noqa: E501
         flush=True,
     )
     if is_main_process():
         # We only need to evaluate the model on the first GPU.
         image_encoder = ddp_model.module.image_encoder
-        eval_single_dataset(image_encoder, tgt_dataset, args)
-        if linearized_finetuning:
-            head_path = os.path.join(ckpdir, f"linear_{args.src_dataset}_for_{tgt_dataset}_.pt")
-            coef = ddp_model.module.image_encoder.model.coef
-        else:
-            head_path = os.path.join(ckpdir, f"{args.src_dataset}_for_{tgt_dataset}_.pt")
-            coef = ddp_model.module.image_encoder.coef
-        torch.save(coef, head_path)
+        acc = eval_single_dataset(image_encoder, tgt_dataset, args)["top1"]
+        if acc > best_acc:
+            best_acc = acc
+            best_epoch = epoch
+            torch.save(coef, coef_path)
 
+    print(f"=> Best performance: {best_acc} reached after epoch {best_epoch}.")
     cleanup_ddp()
-
+    return best_acc
 
 if __name__ == "__main__":
 
     # Epochs w/ lr=1e-2 for entropy objective
     datasets = {
-        "Cars": 5,
-        "DTD": 3,
+        "Cars": 10,
+        "DTD": 20,
         "EuroSAT": 6,
-        "GTSRB": 3,
+        "GTSRB": 5,
         "MNIST": 10,
-        "RESISC45": 2,
-        "SUN397": 1,
-        "SVHN": 1,
+        "RESISC45": 5,
+        "SUN397": 5,
+        "SVHN": 3,
         "CIFAR10": 5,
-        "CIFAR100": 6,
-        "ImageNet": 10,
+        "CIFAR100": 5,
+        "ImageNet": 5,
         "STL10": 4,
-        "Food101": 15,
-        "Caltech256": 8,
-        "FGVCAircraft": 60,
-        "Flowers102": 40,
+        "Food101": 5,
+        "Caltech256": 5,
+        "FGVCAircraft": 30,
+        "Flowers102": 20,
         "OxfordIIITPet": 5,
-        "CUB200": 20,
-        "PascalVOC": 10,
-        "Country211": 15,
+        "CUB200": 10,
+        "PascalVOC": 8,
+        "Country211": 10,
     }
 
     args = parse_arguments()
