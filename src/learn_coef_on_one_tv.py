@@ -111,15 +111,21 @@ def main(rank, args):
             pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
             finetuned_checkpoint = f"{args.save}/{dataset}Val/finetuned.pt"
             task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint)
+    # Add a random task vector to the source
+    tv = task_vectors[dataset]
+    rand_vec = {k: torch.rand_like(v) for k, v in tv.vector.items()}
+    task_vectors["Random"] = tv.__class__(vector=rand_vec)
 
     args.rank = rank
     n = len(args.datasets)
     if os.path.exists(os.path.join(args.save, "pairwise_acc.pt")):
         acc = torch.load(os.path.join(args.save, "pairwise_acc.pt"))
     else:
-        acc = torch.zeros(n, n)
-    for i, tgt_dataset in enumerate(args.datasets):
-        for j, src_dataset in enumerate(args.datasets):
+        acc = torch.zeros(n, n + 1)
+
+    datasets = list(args.datasets.keys())
+    for i, tgt_dataset in enumerate(datasets):
+        for j, src_dataset in enumerate(['Random'] + datasets):
             if src_dataset == tgt_dataset:
                 continue
             args.epochs = args.datasets[tgt_dataset]
@@ -175,6 +181,14 @@ def train(task_vectors, args):
     # Override shuffle to True
     data_loader.shuffle = True
     num_batches = len(dataset.train_loader)
+
+    # Print loss at least 4 times an epoch, at most 10 times an epoch
+    if args.print_every * 10 < num_batches:
+        print_every = int(num_batches / 10)
+    elif args.print_every * 4 > num_batches:
+        print_every = int(num_batches / 4)
+    else:
+        print_every = args.print_every
 
     # Distribute the data and model across the GPUs.
     ddp_loader = distribute_loader(data_loader)
@@ -256,7 +270,7 @@ def train(task_vectors, args):
             batch_time = time.time() - start_time
 
             if (
-                step % args.print_every == 0
+                step % print_every == 0
                 and ((i + 1) % args.num_grad_accumulation == 0)
                 and is_main_process()
             ):
@@ -320,7 +334,7 @@ if __name__ == "__main__":
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 64 if args.model == "ViT-L-14" else 128
     args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
-    args.print_every = 10
+    args.print_every = 50
 
     if args.seed is not None:
         args.save = f"checkpoints_{args.seed}/{args.model}"
