@@ -47,10 +47,25 @@ class ImageFolderWithPaths(datasets.ImageFolder):
         }
 
 
-def maybe_dictionarize(batch):
+def maybe_dictionarize(batch, index=False):
     if isinstance(batch, dict):
+        
         return batch
 
+    if index:
+        index = batch[1]
+        batch = batch[0]
+        if isinstance(batch, dict):
+            if isinstance(batch['images'], list):
+                batch = {'images': batch['images'][0], 'images_aug': batch['images'][1], 'labels': batch['labels'], 'index': index}
+            else:
+                batch = {'images': batch['images'], 'labels': batch['labels'], 'index': index}
+        elif isinstance(batch[0], list):
+            batch = {'images': batch[0][0], 'images_aug': batch[0][1], 'labels': batch[1], 'index': index}
+        else:
+            batch = {'images': batch[0], 'labels': batch[1], 'index': index}
+        return batch
+                
     if len(batch) == 2:
         batch = {'images': batch[0], 'labels': batch[1]}
     elif len(batch) == 3:

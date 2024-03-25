@@ -210,6 +210,71 @@ svhn_template = [
     lambda c: f'a photo of the number: "{c}".',
 ]
 
+caltech256_template = [
+    lambda c: f"a photo of a {c}.",
+    lambda c: f"a painting of a {c}.",
+    lambda c: f"a plastic {c}.",
+    lambda c: f"a sculpture of a {c}.",
+    lambda c: f"a sketch of a {c}.",
+    lambda c: f"a tattoo of a {c}.",
+    lambda c: f"a toy {c}.",
+    lambda c: f"a rendition of a {c}.",
+    lambda c: f"a embroidered {c}.",
+    lambda c: f"a cartoon {c}.",
+    lambda c: f"a {c} in a video game.",
+    lambda c: f"a plushie {c}.",
+    lambda c: f"a origami {c}.",
+    lambda c: f"art of a {c}.",
+    lambda c: f"graffiti of a {c}.",
+    lambda c: f"a drawing of a {c}.",
+    lambda c: f"a doodle of a {c}.",
+    lambda c: f"a photo of the {c}.",
+    lambda c: f"a painting of the {c}.",
+    lambda c: f"the plastic {c}.",
+    lambda c: f"a sculpture of the {c}.",
+    lambda c: f"a sketch of the {c}.",
+    lambda c: f"a tattoo of the {c}.",
+    lambda c: f"the toy {c}.",
+    lambda c: f"a rendition of the {c}.",
+    lambda c: f"the embroidered {c}.",
+    lambda c: f"the cartoon {c}.",
+    lambda c: f"the {c} in a video game.",
+    lambda c: f"the plushie {c}.",
+    lambda c: f"the origami {c}.",
+    lambda c: f"art of the {c}.",
+    lambda c: f"graffiti of the {c}.",
+    lambda c: f"a drawing of the {c}.",
+    lambda c: f"a doodle of the {c}.",
+]
+
+fgvc_template = [
+    lambda c: f"a photo of a {c}, a type of aircraft.",
+    lambda c: f"a photo of the {c}, a type of aircraft.",
+]
+
+flowers102_template = [
+    lambda c: f"a photo of a {c}, a type of flower."
+]
+
+pet_template = [
+    lambda c: f"a photo of a {c}, a type of pet."
+]
+
+cub200_template = [
+    lambda c: f"a photo of a {c}, a type of bird."
+]
+
+voc2007_template = [
+    lambda c: f"a photo of a {c}."
+]
+
+country211_template = [
+    lambda c: f"a photo i took in {c}.",
+    lambda c: f"a photo i took while visiting {c}.",
+    lambda c: f"a photo from my home country of {c}.",
+    lambda c: f"a photo from my visit to {c}.",
+    lambda c: f"a photo showing the country of {c}."
+]
 
 dataset_to_template = {
     'Cars': cars_template,
@@ -225,6 +290,13 @@ dataset_to_template = {
     'STL10': stl10_template,
     'SUN397': sun397_template,
     'SVHN': svhn_template,
+    'Caltech256': caltech256_template,
+    'FGVCAircraft': fgvc_template,
+    'Flowers102': flowers102_template,
+    'OxfordIIITPet': pet_template,
+    'CUB200': cub200_template,
+    'PascalVOC': voc2007_template,
+    'Country211': country211_template,
 }
 
 

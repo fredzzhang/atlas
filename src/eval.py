@@ -39,7 +39,11 @@ def eval_single_dataset(image_encoder, dataset_name, args):
         batch_size=args.batch_size,
     )
     dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
+    dataloader.shuffle=False
     device = args.device
+
+    confs = torch.tensor([])
+    preds = torch.tensor([])
 
     with torch.no_grad():
         top1, correct, n = 0.0, 0.0, 0.0
@@ -50,7 +54,11 @@ def eval_single_dataset(image_encoder, dataset_name, args):
 
             logits = utils.get_logits(x, model)
 
+            conf, _ = logits.softmax(1).max(1)            
+            confs = torch.cat((confs, conf.cpu()), dim=0)
+
             pred = logits.argmax(dim=1, keepdim=True).to(device)
+            preds = torch.cat((preds, pred.cpu()), dim=0)
 
             correct += pred.eq(y.view_as(pred)).sum().item()
 
@@ -58,8 +66,55 @@ def eval_single_dataset(image_encoder, dataset_name, args):
 
         top1 = correct / n
 
-    metrics = {"top1": top1}
+    metrics = {"top1": top1, "conf":confs, "preds":preds}
     print(f"Done evaluating on {dataset_name}. Accuracy: {100*top1:.2f}%")
+
+    return metrics
+
+def eval_single_train_dataset(image_encoder, dataset_name, dataloader, args):
+    # Build the classification head with all classes, when the dataset only has one.
+    if '_' in dataset_name:
+        dataset_name_ = dataset_name.split('_')[-1]
+    else:
+        dataset_name_ = dataset_name
+        
+    classification_head = get_classification_head(args, dataset_name_)
+    model = ImageClassifier(image_encoder, classification_head)
+
+    model.eval()
+
+    device = args.device
+
+    confs = torch.zeros(len(dataloader.dataset))
+    preds = torch.zeros(len(dataloader.dataset)).long()
+    targets = torch.zeros(len(dataloader.dataset)).long()
+    full_preds = torch.zeros((len(dataloader.dataset), classification_head.out_features))
+
+    with torch.no_grad():
+        top1, correct, n = 0.0, 0.0, 0.0
+        for _, data in enumerate(tqdm.tqdm(dataloader)):
+            data = maybe_dictionarize(data, index=True)
+            x = data["images"].to(device)
+            y = data["labels"].to(device)
+            ids = data["index"]
+
+            logits = utils.get_logits(x, model)
+            full_preds[ids] = logits.softmax(1).cpu()
+            conf, _ = logits.softmax(1).max(1)            
+            confs[ids] = conf.cpu()
+
+            pred = logits.argmax(dim=1, keepdim=True).to(device)
+            preds[ids] = pred.cpu().flatten()
+            targets[ids] = y.cpu()
+
+            correct += pred.eq(y.view_as(pred)).sum().item()
+
+            n += y.size(0)
+
+            top1 = correct / n
+
+    metrics = {"top1": top1, "conf":confs, "preds":preds, "targets":targets, "full_preds":full_preds}
+    #print(f"Done evaluating on {dataset_name}. Accuracy: {100*top1:.2f}%")
 
     return metrics
 

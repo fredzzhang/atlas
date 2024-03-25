@@ -3,11 +3,11 @@ import pickle
 
 import numpy as np
 import torch
+import math
 
 
 def assign_learning_rate(param_group, new_lr):
     param_group["lr"] = new_lr
-
 
 def _warmup_lr(base_lr, warmup_length, step):
     return base_lr * (step + 1) / warmup_length
@@ -29,7 +29,6 @@ def cosine_lr(optimizer, base_lrs, warmup_length, steps):
             assign_learning_rate(param_group, lr)
 
     return _lr_adjuster
-
 
 def accuracy(output, target, topk=(1,)):
     pred = output.topk(max(topk), 1, True, True)[1].t()
@@ -139,3 +138,33 @@ def nonlinear_advantage(nonlinear_acc, linear_acc, num_classes):
     -1 indicates the opposite.
     """
     return (nonlinear_acc - linear_acc) / (1.0 - 1.0 / num_classes)
+
+def cosine_annealing_lr(init_lr, stage1, epochs):
+    lrs = [init_lr] * epochs
+    init_lr_stage_ldl = init_lr
+    for t in range(stage1, epochs):
+        lrs[t] = 0.5 * init_lr_stage_ldl * (1 + math.cos((t - stage1 + 1) * math.pi / (epochs - stage1 + 1)))
+    return lrs
+
+def adjust_lr(optimizer, lr):
+    for i, param_group in enumerate(optimizer.param_groups):
+        param_group['lr'] = lr
+        
+class TwoTransform:
+    """Create two transforms of the same image"""
+
+    def __init__(self, transform):
+        self.transform = transform
+
+    def __call__(self, x):
+        return [self.transform(x), self.transform(x)]
+    
+class TwoAsymetricTransform:
+    """Create two asymetrics transforms of the same image"""
+
+    def __init__(self, transform, transform2):
+        self.transform = transform
+        self.transform2 = transform2
+
+    def __call__(self, x):
+        return [self.transform(x), self.transform2(x)]

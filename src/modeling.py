@@ -70,6 +70,7 @@ class ClassificationHead(torch.nn.Linear):
             self.bias = torch.nn.Parameter(biases.clone())
         else:
             self.bias = torch.nn.Parameter(torch.zeros_like(self.bias))
+            
 
     def forward(self, inputs):
         if self.normalize:
@@ -102,13 +103,16 @@ class ImageClassifier(torch.nn.Module):
         self.classification_head.weight.requires_grad_(False)
         self.classification_head.bias.requires_grad_(False)
 
-    def forward(self, inputs):
+    def forward(self, inputs, return_features=False):
         features = self.image_encoder(inputs)
         outputs = self.classification_head(features)
+        if return_features:
+            return outputs, features
         return outputs
-
-    def __call__(self, inputs):
-        return self.forward(inputs)
+    
+        
+    def __call__(self, inputs, *args, **kwargs):
+        return self.forward(inputs, *args, **kwargs)
 
     def save(self, filename):
         print(f"Saving image classifier to {filename}")

@@ -16,7 +16,43 @@ class _TaskVector(abc.ABC):
         the task vector state dict.
         """
         if vector is not None:
-            self.vector = vector
+            pretrained_state_dict = self._load_checkpoint(
+                pretrained_checkpoint
+            ).state_dict()
+            self.vector = {}            
+            for key in pretrained_state_dict:
+                if pretrained_state_dict[key].dtype == torch.int64:
+                    continue
+                if pretrained_state_dict[key].dtype == torch.uint8:
+                    continue
+                pt = pretrained_state_dict[key]
+                mi, ma = pretrained_state_dict[key].min(), pretrained_state_dict[key].max()
+                vector[key] = vector[key] * (ma - mi) + mi
+                self.vector[key] = (
+                    vector[key] - pretrained_state_dict[key]
+                )
+            
+                        
+        elif finetuned_checkpoint is None: #Random tv
+            with torch.no_grad():
+                pretrained_state_dict = self._load_checkpoint(
+                    pretrained_checkpoint
+                ).state_dict()
+                finetuned_state_dict = {}
+                for k in pretrained_state_dict.keys():
+                    mi, ma = pretrained_state_dict[k].min(), pretrained_state_dict[k].max()
+                    finetuned_state_dict[k] = torch.rand(pretrained_state_dict[k].shape) * (ma - mi) + mi
+                    
+                self.vector = {}
+                for key in pretrained_state_dict:
+                    if pretrained_state_dict[key].dtype == torch.int64:
+                        continue
+                    if pretrained_state_dict[key].dtype == torch.uint8:
+                        continue
+                    self.vector[key] = (
+                        finetuned_state_dict[key] - pretrained_state_dict[key]
+                    )
+            
         else:
             assert (
                 pretrained_checkpoint is not None and finetuned_checkpoint is not None

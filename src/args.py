@@ -20,7 +20,7 @@ def parse_arguments():
     parser.add_argument(
         "--data-location",
         type=str,
-        default=os.path.expanduser("~/data"),
+        default=os.path.expanduser("~/Documents/data"),
         help="The root directory for the datasets.",
     )
     parser.add_argument(
@@ -40,8 +40,16 @@ def parse_arguments():
         default='entropy',
         type=str,
         help="Loss function to use.",
-        choices=["entropy", "cross_entropy"]
+        choices=["entropy", "cross_entropy", "simclr", "simclr_entro", "barlow_simclr", 'simclr_mixup', "cb_entropy", "ssl_simclr", "trusted", "entro_trusted", "ssl_simclr_trusted", "ssl_simclr_trusted_entro"]
     )
+    parser.add_argument(
+        "--lr-scheduler",
+        default='',
+        type=str,
+        help="Loss function to use.",
+        choices=["", "annealing"]
+    )
+
     parser.add_argument(
         "--train-dataset",
         default=None,
@@ -148,6 +156,36 @@ def parse_arguments():
         type=int,
         default=21,
         help="Number of evaluation points used to find optimal coefficient in task arithmetic.",
+    )
+    parser.add_argument(
+        "--layerwise",
+        default=False,
+        action='store_true',
+        help="Compute layerwise parameters."
+    )
+    parser.add_argument(
+        "--trainset",
+        default=False,
+        action='store_true',
+        help="Compute coefs on a subset of the trainset."
+    )
+    parser.add_argument(
+        "--random-tv",
+        default=False,
+        action='store_true',
+        help="Ablate on random task vectors."
+    )
+    parser.add_argument(
+        "--add-random-tv",
+        type=int,
+        default=None,
+        help="Add the specified amount random task vectors on top of the existing ones."
+    )
+    parser.add_argument(
+        "--optimally-random",
+        type=str,
+        default=None,
+        help="Path to optiized random task vectors.",
     )
     parsed_args = parser.parse_args()
     parsed_args.device = "cuda" if torch.cuda.is_available() else "cpu"
