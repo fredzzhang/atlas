@@ -176,6 +176,18 @@ def parse_arguments():
         help="Ablate on random task vectors."
     )
     parser.add_argument(
+        "--l1",
+        default=False,
+        action='store_true',
+        help="L1 reg"
+    )
+    parser.add_argument(
+        "--scale",
+        default=False,
+        action='store_true',
+        help="Scale the task vectors"
+    )
+    parser.add_argument(
         "--add-random-tv",
         type=int,
         default=None,

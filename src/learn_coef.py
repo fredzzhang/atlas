@@ -59,13 +59,19 @@ def ssl_loss(logits1: torch.Tensor, logits2: torch.Tensor, lam: float=None, inde
         return lam * F.cross_entropy(logits2, guessed_targets) + (1-lam) * F.cross_entropy(logits2, guessed_targets[index])
     return F.cross_entropy(logits2, guessed_targets) #(F.cross_entropy(logits2, one_hot, reduction='none') * w).sum() / w.sum() #
 
+def l1_reg(coefs: torch.Tensor, lambda1: float=0.5):
+    l1_regularization = lambda1 * torch.norm(coefs, p=1, dim=0)
+    return l1_regularization.mean()
+    
+    
+
 def ce_loss_trusted(logits1: torch.Tensor, logits2: torch.Tensor, preds: torch.FloatTensor=None, trusted: torch.BoolTensor=None, lam: float=None, index: torch.Tensor=None) -> torch.Tensor:
     trusted = trusted.to(logits1)
     return (F.cross_entropy(logits2, preds.to(logits2), reduction='none')*trusted).sum() / trusted.sum()
     #return F.cross_entropy(logits2, guessed_targets)#(F.cross_entropy(logits2, one_hot, reduction='none') * w).sum() / w.sum() 
 
 
-def ssl_loss_trusted(logits1: torch.Tensor, logits2: torch.Tensor, preds: torch.FloatTensor=None, trusted: torch.BoolTensor=None, lam: float=None, index: torch.Tensor=None) -> torch.Tensor:
+def ssl_loss_trusted(logits1: torch.Tensor, logits2: torch.Tensor, preds: torch.FloatTensor=None, trusted: torch.BoolTensor=None, lam: float=None, index: torch.Tensor=None, thresh: float=0.99) -> torch.Tensor:
     #one_hot = torch.argmax(logits1.softmax(1), dim=1).detach()
     one_hot = logits1.softmax(1).detach()
     
@@ -79,12 +85,12 @@ def ssl_loss_trusted(logits1: torch.Tensor, logits2: torch.Tensor, preds: torch.
     one_hot = F.one_hot(torch.argmax(guessed_targets, dim=1), num_classes=one_hot.shape[1]).float()
     
     w, _ = guessed_targets.max(1)
-    w = (w > .9).to(logits2)
+    w = (w > thresh).to(logits2)
     if lam is not None:
         return lam * F.cross_entropy(logits2, guessed_targets) + (1-lam) * F.cross_entropy(logits2, guessed_targets[index])
     trusted = trusted.to(logits1)
     #return (F.cross_entropy(logits2, guessed_targets, reduction='none')*trusted).sum() / trusted.sum()
-    return F.cross_entropy(logits2, guessed_targets)#(F.cross_entropy(logits2, guessed_targets, reduction='none') * w).sum() / w.sum() 
+    return (F.cross_entropy(logits2, guessed_targets, reduction='none') * w).sum() / w.sum() 
 
 
 def simclr_loss(logits1: torch.Tensor, logits2: torch.Tensor, mu:float=0.2) -> torch.Tensor:
@@ -238,22 +244,22 @@ def main(rank, args):
     for i, dataset in enumerate(pool):
         if "randomtv" in dataset:
             pretrained_checkpoint = "checkpoints/ViT-B-32/CarsVal/zeroshot.pt"#f"{args.save}/{dataset}Val/zeroshot.pt"
-            task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint)
+            task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, scale=args.scale)
         elif args.finetuning_mode == "linear":
             pretrained_checkpoint = f"{args.save}/{dataset}Val/linear_zeroshot.pt"
             finetuned_checkpoint = f"{args.save}/{dataset}Val/linear_finetuned.pt"
             task_vectors[dataset] = LinearizedTaskVector(pretrained_checkpoint, finetuned_checkpoint)
         elif args.random_tv:
             pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
-            task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint)
+            task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, scale=args.scale)
         elif args.optimally_random is not None:
             pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
             opt_tv = torch.load(os.path.join(args.optimally_random, f'tv_{i}.pth'))
-            task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, vector=opt_tv["state_dict"])            
+            task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, vector=opt_tv["state_dict"], scale=args.scale)
         else:
             pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
             finetuned_checkpoint = f"{args.save}/{dataset}Val/finetuned.pt"
-            task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint)
+            task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint, scale=args.scale)
 
     args.rank = rank
     fname = f"results/results_{args.loss_fn}{'_layerwise' if args.layerwise else '_global'}{'_randomtv' if args.random_tv else ''}{'_optitv' if args.optimally_random else ''}_{datetime.today().strftime('%Y-%m-%d-%H:%M')}.txt"
@@ -315,7 +321,7 @@ def train(task_vectors, args):
             model.val_preprocess.transforms[-3:]
         )
 
-        preprocess_fn = TwoAsymetricTransform(model.val_preprocess, preprocess_fn)           
+        preprocess_fn = TwoAsymetricTransform(model.val_preprocess, preprocess_fn)
     else:
         preprocess_fn = model.val_preprocess
 
@@ -428,6 +434,8 @@ def train(task_vectors, args):
                     unlabeled = torch.arange(len(confs))[(confs < .8) * (confs > 0)]
                 else:
                     k = min(int((len(subset) / classification_head.out_features) / 10), 100)
+                    #k = max(int((len(subset) / classification_head.out_features) / 10), 10)
+                    #k = int((len(subset) / classification_head.out_features) / 10)
                     print(k)
                     to_keep = torch.tensor([], dtype=torch.long)
                     unlabeled = torch.tensor([], dtype=torch.long)
@@ -473,7 +481,11 @@ def train(task_vectors, args):
                 # Distribute the data and model across the GPUs.
                 #ddp_loader = distribute_loader(data_loader)
                 ddp_loader = data_loader
-                
+
+        if "ssl" in args.loss_fn:
+            threshs = torch.arange(args.epochs) / args.epochs / 10 + .9
+            #threshs = (1-torch.tensor(cosine_annealing_lr(1, 0, args.epochs))) / 10 + .9
+            
                 
         for i, batch in enumerate(ddp_loader):
             start_time = time.time()
@@ -498,7 +510,7 @@ def train(task_vectors, args):
                 index = torch.randperm(len(inputs))
                 inputs = lam * inputs + (1-lam) * inputs[index]
             with torch.autocast(device_type="cuda"):
-                if 'ssl' in args.loss_fn:
+                if 'ssl' in args.loss_fn and 'entro' not in args.loss_fn:
                     with torch.no_grad():
                         logits = ddp_model(inputs)
                 elif 'simclr' in args.loss_fn:
@@ -517,21 +529,23 @@ def train(task_vectors, args):
                     lam = max(lam, 1-lam)
                     index = torch.randperm(len(inputs2))
                     #inputs2 = lam * inputs2 + (1-lam) * inputs2[index]
-                    logits2 = ddp_model(inputs2)
-                    #labels = batch["labels"].cuda()
-                    #labels = F.one_hot(labels, num_classes=classification_head.out_features)
                     if epoch == 0 and 'entro' in args.loss_fn:
-                        #loss = simclr_loss(logits, logits2).mean()
+                        #logits2, feats2 = ddp_model(inputs2, return_features=True)
+                        #loss = simclr_loss(feats, feats2).mean()
                         loss = softmax_entropy(logits).mean()
                         #loss = F.cross_entropy(logits, labels.float())
+                        #labels = batch["labels"].cuda()
+                        #labels = F.one_hot(labels, num_classes=classification_head.out_features)
                     elif epoch < 2 and False:
+                        logits2 = ddp_model(inputs2)
                         trusted = torch.ones(args.batch_size).bool()
                         trusted[:args.batch_size//2] = 0 #First half of the batch are untrusted labels
                         loss = ce_loss_trusted(logits, logits2, preds[ids], trusted)#, lam, index)
                     else:
+                        logits2 = ddp_model(inputs2)
                         trusted = torch.ones(args.batch_size).bool()
                         trusted[:args.batch_size//2] = 0 #First half of the batch are untrusted labels
-                        loss = loss_fn(logits, logits2, preds[ids], trusted)#, lam, index)
+                        loss = loss_fn(logits, logits2, preds[ids], trusted, thresh=threshs[epoch])#, lam, index)
                         #loss = softmax_entropy(logits).mean()
 
                 elif 'trusted' in args.loss_fn:
@@ -553,6 +567,10 @@ def train(task_vectors, args):
                         loss = loss_fn(feats, feats2).mean()                    
                 else:
                     loss = loss_fn(logits).mean(0)
+                    
+                if args.l1:
+                    loss += l1_reg(ddp_model.module.image_encoder.coef)
+
                     
             scaler.scale(loss).backward()
 
