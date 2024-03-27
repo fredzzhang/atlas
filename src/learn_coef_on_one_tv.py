@@ -60,7 +60,7 @@ class LinearizedModel_(nn.Module):
         return out + dp
     
 class ImageEncoder_(nn.Module):
-    def __init__(self, model, task_vectors, device, layerwise=True) -> None:
+    def __init__(self, model, task_vectors, device, blockwise=True) -> None:
         """A wrapper class to enable compositions of task vectors"""
         super().__init__()
 
@@ -73,7 +73,7 @@ class ImageEncoder_(nn.Module):
             p.requires_grad = False
 
         self.device = device
-        self.layerwise = layerwise
+        self.blockwise = blockwise
         # Copy the attributes from the image encoder.
         self.train_preprocess = model.train_preprocess
         self.val_preprocess = model.val_preprocess
@@ -85,13 +85,13 @@ class ImageEncoder_(nn.Module):
             dparams.append(dp)
 
         self.dparams = dparams
-        if layerwise:
+        if blockwise:
             self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params)))
         else:
             self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors),))
 
     def __call__(self, x) -> torch.Tensor:
-        if self.layerwise:
+        if self.blockwise:
             dparams = [sum([p * c[i] for p, c in zip(dp, self.coef)]) for i, dp in enumerate(zip(*self.dparams))]
         else:
             dparams = [sum([p * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
@@ -135,7 +135,7 @@ def main(rank, args):
             print(f"Learning coefficients for {tgt_dataset} using task vector from {src_dataset}")
             print("=" * 100)
 
-            best_acc = train([task_vectors[src_dataset],], args)
+            best_acc = train([task_vectors[src_dataset] * 100,], args)
             acc[i, j] = best_acc
 
             torch.save(acc, os.path.join(args.save, "pairwise_acc.pt"))
@@ -161,7 +161,7 @@ def train(task_vectors, args):
         image_encoder.model = LinearizedModel_(image_encoder.model, task_vectors, device=args.rank)
     else:
         image_encoder = ImageEncoder(args)
-        image_encoder = ImageEncoder_(image_encoder, task_vectors, device=args.rank)
+        image_encoder = ImageEncoder_(image_encoder, task_vectors, device=args.rank, blockwise=args.blockwise_coef)
 
     classification_head = get_classification_head(args, tgt_dataset)
     model = ImageClassifier(image_encoder, classification_head)
@@ -229,12 +229,14 @@ def train(task_vectors, args):
         if is_main_process():
             # We only need to evaluate the model on the first GPU.
             image_encoder = ddp_model.module.image_encoder
-            with torch.autocast(device_type='cuda', dtype=torch.float16):
-                acc = eval_single_dataset(image_encoder, tgt_dataset, args)["top1"]
+            acc = eval_single_dataset(image_encoder, tgt_dataset, args)["top1"]
             if acc > best_acc:
                 best_acc = acc
                 best_epoch = epoch
-                torch.save(coef, coef_path)
+                if args.blockwise_coef:
+                    torch.save(coef, coef_path)
+                else:
+                    print(f"Better coefficient found: {coef.item()}")
 
         ddp_loader.sampler.set_epoch(epoch)
         for i, batch in enumerate(ddp_loader):
@@ -290,12 +292,14 @@ def train(task_vectors, args):
     if is_main_process():
         # We only need to evaluate the model on the first GPU.
         image_encoder = ddp_model.module.image_encoder
-        with torch.autocast(device_type='cuda', dtype=torch.float16):
-            acc = eval_single_dataset(image_encoder, tgt_dataset, args)["top1"]
+        acc = eval_single_dataset(image_encoder, tgt_dataset, args)["top1"]
         if acc > best_acc:
             best_acc = acc
             best_epoch = epoch
-            torch.save(coef, coef_path)
+            if args.blockwise_coef:
+                torch.save(coef, coef_path)
+            else:
+                print(f"Better coefficient found: {coef.item()}")
 
     print(f"=> Best performance: {best_acc} reached after epoch {best_epoch}.")
     cleanup_ddp()
@@ -303,34 +307,34 @@ def train(task_vectors, args):
 
 if __name__ == "__main__":
 
-    # Epochs w/ lr=1e-2 for entropy objective
+    # Epochs w/ lr=1e-2
     datasets = {
-        "Cars": 10,
-        "DTD": 20,
-        "EuroSAT": 6,
-        "GTSRB": 5,
-        "MNIST": 10,
+        "Cars": 6,
+        "DTD": 10,
+        "EuroSAT": 12,
+        "GTSRB": 10,
+        "MNIST": 5,
         "RESISC45": 5,
         "SUN397": 5,
         "SVHN": 3,
         "CIFAR10": 5,
         "CIFAR100": 5,
-        "ImageNet": 5,
+        "ImageNet": 1,
         "STL10": 4,
         "Food101": 5,
         "Caltech256": 5,
-        "FGVCAircraft": 30,
-        "Flowers102": 20,
+        "FGVCAircraft": 25,
+        "Flowers102": 15,
         "OxfordIIITPet": 5,
-        "CUB200": 10,
-        "PascalVOC": 8,
-        "Country211": 10,
+        "CUB200": 8,
+        "PascalVOC": 5,
+        "Country211": 5,
     }
 
     args = parse_arguments()
     args.datasets = datasets
     # HACK: Some command line arguments are overwritten by defaults here.
-    args.lr = 1e-2
+    args.lr = 1e-3
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 64 if args.model == "ViT-L-14" else 128
     args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
