@@ -135,7 +135,9 @@ def main(rank, args):
             print(f"Learning coefficients for {tgt_dataset} using task vector from {src_dataset}")
             print("=" * 100)
 
-            best_acc = train([task_vectors[src_dataset] * 100,], args)
+            # HACK: This is an ad hoc scale
+            scale = 100 if src_dataset != 'Random' else 1
+            best_acc = train([task_vectors[src_dataset] * scale,], args)
             acc[i, j] = best_acc
 
             torch.save(acc, os.path.join(args.save, "pairwise_acc.pt"))
