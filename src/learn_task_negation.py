@@ -6,122 +6,23 @@ Fred Zhang <frederic.zhang@adelaide.edu.au>
 Australian Institute for Machine Learning
 """
 import os
+import time
 import json
 import torch
 
-from utils import find_optimal_coef
-
-from src.args import parse_arguments
-from src.datasets.common import get_dataloader, maybe_dictionarize
-from src.datasets.registry import get_dataset
-from src.eval import evaluate_task_vector, evaluate_task_vector_at_coef
-from src.heads import get_classification_head
-from src.distributed import cleanup_ddp, distribute_loader, is_main_process, setup_ddp
-from src.task_vectors import LinearizedTaskVector, NonLinearTaskVector
-from src.modeling import ImageEncoder, MultiHeadImageClassifier
+from torch.cuda.amp import GradScaler
 from src.linearize import LinearizedImageEncoder
+from src.modeling import ImageEncoder, MultiHeadImageClassifier
+from src.task_vectors import LinearizedTaskVector, NonLinearTaskVector
 from src.composition import WeightedImageEncoder, WeightedLinearizedModel
 
-args = parse_arguments()
-
-
-if args.seed is not None:
-    args.save = f"checkpoints_{args.seed}/{args.model}"
-else:
-    args.save = f"checkpoints/{args.model}"
-
-with open(os.path.join(args.save, "zeroshot_accuracies.json")) as f:
-    pretrained_accuracies = json.load(f)
-
-eval_datasets = [
-    "Cars",
-    "DTD",
-    "EuroSAT",
-    "GTSRB",
-    "MNIST",
-    "RESISC45",
-    "SUN397",
-    "SVHN",
-]
-
-print("*" * 100)
-if args.finetuning_mode == "standard":
-    print("Evaluating non-linear FT models.")
-    ft_accuracies_path = os.path.join(args.save, "ft_accuracies.json")
-elif args.finetuning_mode == "linear":
-    print("Evaluating linear FT models.")
-    ft_accuracies_path = os.path.join(args.save, "linear_ft_accuracies.json")
-elif args.finetuning_mode == "posthoc":
-    print("Evaluating post-hoc linearized models.")
-    ft_accuracies_path = os.path.join(args.save, "posthoc_ft_accuracies.json")
-else:
-    raise ValueError(f"Invalid finetuning mode: {args.finetuning_mode}")
-print("*" * 100)
-
-with open(ft_accuracies_path) as f:
-    args.finetuning_accuracies = json.load(f)
-
-control_dataset = "ImageNet"
-negation_accuracies = {}
-
-for dataset in eval_datasets:
-    if args.finetuning_mode == "linear":
-        pretrained_checkpoint = f"{args.save}/{dataset}Val/linear_zeroshot.pt"
-        finetuned_checkpoint = f"{args.save}/{dataset}Val/linear_finetuned.pt"
-        task_vector = -LinearizedTaskVector(pretrained_checkpoint, finetuned_checkpoint)
-    else:
-        pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
-        finetuned_checkpoint = f"{args.save}/{dataset}Val/finetuned.pt"
-        task_vector = -NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint)
-
-    # We use the validation set to choose the optimal coefficient.
-    args.eval_datasets = [dataset + "Val"]
-    args.control_dataset = control_dataset + "Val"
-    val_metrics = evaluate_task_vector(
-        task_vector,
-        pretrained_checkpoint,
-        args,
-        posthoc_linearization=args.finetuning_mode == "posthoc",
-    )
-
-    optimal_coef = find_optimal_coef(
-        val_metrics,
-        metric=f"{dataset}Val:top1",
-        minimize=True,
-        control_metric=f"{control_dataset}Val:top1",
-        control_metric_threshold=args.control_threshold
-        * pretrained_accuracies[control_dataset + "Val"],
-    )
-
-    # Evaluate on the test set with the optimal coefficient.
-    args.eval_datasets = [dataset]
-    args.control_dataset = control_dataset
-    test_metrics = evaluate_task_vector_at_coef(
-        task_vector,
-        pretrained_checkpoint,
-        args,
-        optimal_coef,
-        posthoc_linearization=args.finetuning_mode == "posthoc",
-    )
-
-    print("=" * 100)
-    print(f"Test accuracy: {test_metrics[f'{dataset}:top1']}")
-
-    negation_accuracies[dataset] = {
-        "test": test_metrics[f"{dataset}:top1"],
-        "test_control": test_metrics[f"{control_dataset}:top1"],
-        "val": val_metrics,
-    }
-
-if args.finetuning_mode == "standard":
-    save_file = f"{args.save}/negations.json"
-elif args.finetuning_mode == "linear":
-    save_file = f"{args.save}/linear_negations.json"
-elif args.finetuning_mode == "posthoc":
-    save_file = f"{args.save}/posthoc_negations.json"
-
-with open(save_file, "w") as f:
-    json.dump(negation_accuracies, f, indent=4)
+from src.utils import cosine_lr
+from src.args import parse_arguments
+from src.eval import eval_single_dataset
+from src.datasets.registry import get_dataset
+from src.heads import get_classification_head
+from src.datasets.common import get_dataloader, maybe_dictionarize
+from src.distributed import cleanup_ddp, distribute_loader, is_main_process, setup_ddp
 
 def main(rank, args):
 
@@ -183,36 +84,120 @@ def main(rank, args):
     model = model.cuda()
 
     preprocess_fn = model.train_preprocess
-    target_dataset = get_dataset(
-        tgt_dataset, preprocess_fn,
-        locaiton=args.data_location,
-        batch_size=args.batch_size
+    tgt_dataloader = get_dataloader(
+        get_dataset(
+            tgt_dataset, preprocess_fn,
+            locaiton=args.data_location,
+            batch_size=int(args.batch_size / 2)),
+        is_train=True, args=args, image_encoder=None
     )
-    control_dataset = get_dataset(
-        ctr_dataset, preprocess_fn,
-        locaiton=args.data_location,
-        batch_size=args.batch_size
+    ctr_dataloader = get_dataloader(
+        get_dataset(
+            ctr_dataset, preprocess_fn,
+            locaiton=args.data_location,
+            batch_size=int(args.batch_size / 2)),
+        is_train=True, args=args, image_encoder=None
     )
+    num_batches = len(tgt_dataloader)
+    # Printing loss between four and ten times an epoch
+    if args.print_every * 10 < num_batches:
+        print_every = int(num_batches / 10)
+    elif args.print_every * 4 > num_batches:
+        print_every = int(num_batches / 4)
+    else:
+        print_every = args.print_every
+
+    # Distribute the data and model across the GPUs.
+    ddp_tgt_loader = distribute_loader(tgt_dataloader)
+    ddp_ctr_loader = distribute_loader(ctr_dataloader)
+    ddp_model = torch.nn.parallel.DistributedDataParallel(
+        model,
+        device_ids=[args.rank],
+        find_unused_parameters=False,
+        output_device=args.rank,
+    )
+
+    loss_fn = torch.nn.CrossEntropyLoss()
+
+    params = [p for p in ddp_model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
+    scheduler = cosine_lr(
+        optimizer,
+        args.lr,
+        args.warmup_length,
+        args.epoch * num_batches // args.num_grad_accumulation,
+    )
+
+    scaler = GradScaler()
+    for epoch in range(args.epoch):
+        # Evaluate before each epoch
+        if is_main_process():
+            # We only need to evaluate the model on the first GPU.
+            image_encoder = ddp_model.module.image_encoder
+            eval_single_dataset(image_encoder, tgt_dataset, args)
+            eval_single_dataset(image_encoder, ctr_dataset, args)
     
-    # TODO: prepare dataset and dataloader
+        ddp_tgt_loader.sampler.set_epoch(epoch)
+        ddp_ctr_loader.sampler.set_epoch(epoch)
+        ctr_iter = iter(ddp_ctr_loader)
+        for i, batch in enumerate(ddp_tgt_loader):
+            ctr_batch = next(ctr_iter)
+            start_time = time.time()
 
-    # TODO: prepare loss function and optimiser
+            step = (
+                i // args.num_grad_accumulation
+                + epoch * num_batches // args.num_grad_accumulation
+            )
 
-    # TODO: add training loop, stats printing and parameter saving
+            batch = maybe_dictionarize(batch)
+            ctr_batch = maybe_dictionarize(ctr_batch)
+            inputs = torch.cat([batch["images"].cuda(), ctr_batch["images"].cuda()])
+            data_time = time.time() - start_time
+            
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                logits = ddp_model(inputs)
+                labels = [batch["labels"].cuda(), ctr_batch["labels"].cuda()]
+                loss_tgt, loss_ctr = [loss_fn(x, y) for x, y in zip(logits, labels)]
+                # Gradient ascent on target dataset
+                # Gradient descent on control dataset
+                loss = -loss_tgt + loss_ctr
+
+            scaler.scale(loss).backward()
+
+            if (i + 1) % args.num_grad_accumulation == 0:
+                scheduler(step)
+
+                torch.nn.utils.clip_grad_norm_(params, 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+
+            batch_time = time.time() - start_time
+
+            if (
+                step % print_every == 0
+                and ((i + 1) % args.num_grad_accumulation == 0)
+                and is_main_process()
+            ):
+                percent_complete = 100 * (i + 1) / len(ddp_tgt_loader)
+                print(
+                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(ddp_tgt_loader)}]\t"   # noqa: E501
+                    f"Loss (tgt.): {loss_tgt.item():.6f}\tLoss (ctr.): {loss_ctr.item():.6f}\t"         # noqa: E501
+                    f"Data (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",                            # noqa: E501
+                    flush=True,
+                )
 
     if is_main_process():
         # We only need to evaluate the model on the first GPU.
         image_encoder = ddp_model.module.image_encoder
-        eval_single_dataset(image_encoder, test_dataset, args)
-        string = 'Coefficients:\t|'
-        for c in coef.data:
-            string += f"`{c.mean().item():.4f}`|"
-        print(string)
+        eval_single_dataset(image_encoder, tgt_dataset, args)
+        eval_single_dataset(image_encoder, ctr_dataset, args)
+
         if linearized_finetuning:
-            head_path = os.path.join(ckpdir, "linear_layer_coef_.pt")
+            head_path = os.path.join(ckpdir, "linear_negation_layer_coef_.pt")
             coef = ddp_model.module.image_encoder.model.coef
         else:
-            head_path = os.path.join(ckpdir, "layer_coef.pt")
+            head_path = os.path.join(ckpdir, "negation_layer_coef.pt")
             coef = ddp_model.module.image_encoder.coef
         torch.save(coef, head_path)
 
