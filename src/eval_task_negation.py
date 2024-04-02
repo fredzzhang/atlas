@@ -1,7 +1,7 @@
 import json
 import os
 
-from utils import find_optimal_coef
+from src.utils import find_optimal_coef
 
 from src.args import parse_arguments
 from src.eval import evaluate_task_vector, evaluate_task_vector_at_coef
@@ -74,8 +74,8 @@ for dataset in eval_datasets:
         metric=f"{dataset}Val:top1",
         minimize=True,
         control_metric=f"{control_dataset}Val:top1",
-        # control_metric_threshold=args.control_threshold
-        # * pretrained_accuracies[control_dataset + "Val"],
+        control_metric_threshold=args.control_threshold
+        * pretrained_accuracies[control_dataset + "Val"],
     )
 
     # Evaluate on the test set with the optimal coefficient.
