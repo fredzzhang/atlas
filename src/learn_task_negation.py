@@ -26,12 +26,13 @@ from src.distributed import cleanup_ddp, distribute_loader, is_main_process, set
 
 def main(rank, args):
 
-    setup_ddp(args.rank, args.world_size, port=args.port)
+    setup_ddp(rank, args.world_size, port=args.port)
 
     tgt_dataset = args.tgt_dataset
+    ctr_dataset = args.ctr_dataset
     if args.partition == "trainval":
         tgt_dataset += "Val"
-    ctr_dataset = args.ctr_dataset
+        ctr_dataset += "Val"
 
     ckpdir = os.path.join(args.save, tgt_dataset)
     os.makedirs(ckpdir, exist_ok=True)
@@ -87,15 +88,17 @@ def main(rank, args):
     tgt_dataloader = get_dataloader(
         get_dataset(
             tgt_dataset, preprocess_fn,
-            locaiton=args.data_location,
-            batch_size=int(args.batch_size / 2)),
+            location=args.data_location,
+            batch_size=int(args.batch_size / 2),
+            num_workers=2),
         is_train=True, args=args, image_encoder=None
     )
     ctr_dataloader = get_dataloader(
         get_dataset(
             ctr_dataset, preprocess_fn,
-            locaiton=args.data_location,
-            batch_size=int(args.batch_size / 2)),
+            location=args.data_location,
+            batch_size=int(args.batch_size / 2),
+            num_workers=2),
         is_train=True, args=args, image_encoder=None
     )
     num_batches = len(tgt_dataloader)
@@ -112,9 +115,9 @@ def main(rank, args):
     ddp_ctr_loader = distribute_loader(ctr_dataloader)
     ddp_model = torch.nn.parallel.DistributedDataParallel(
         model,
-        device_ids=[args.rank],
+        device_ids=[rank],
         find_unused_parameters=False,
-        output_device=args.rank,
+        output_device=rank,
     )
 
     loss_fn = torch.nn.CrossEntropyLoss()
@@ -128,14 +131,29 @@ def main(rank, args):
         args.epoch * num_batches // args.num_grad_accumulation,
     )
 
+    if linearized_finetuning:
+        head_path = os.path.join(ckpdir, "linear_learned_negation.pt")
+        log_path = os.path.join(args.save, "linear_learned_negations.json")
+        coef = ddp_model.module.image_encoder.model.coef
+    else:
+        head_path = os.path.join(ckpdir, "learned_negation.pt")
+        log_path = os.path.join(args.save, "learned_negations.json")
+        coef = ddp_model.module.image_encoder.coef
+
     scaler = GradScaler()
+    tgt_zs_acc = args.zs_acc[tgt_dataset]
+    best_acc = tgt_zs_acc
+    ctr_zs_acc = args.zs_acc[ctr_dataset]
+    if is_main_process():
+        print(f"=> Zero-shot accuracy on {tgt_dataset} (target): {100*tgt_zs_acc:.2f}%.")
+        print(f"=> Zero-shot accuracy on {ctr_dataset} (control): {100*ctr_zs_acc:.2f}%.")
+        if os.path.exists(log_path):
+            with open(log_path) as f:
+                neg_acc = json.load(f)
+        else:
+            neg_acc = {"trainval": {}, "traintest": {}}
+
     for epoch in range(args.epoch):
-        # Evaluate before each epoch
-        if is_main_process():
-            # We only need to evaluate the model on the first GPU.
-            image_encoder = ddp_model.module.image_encoder
-            eval_single_dataset(image_encoder, tgt_dataset, args)
-            eval_single_dataset(image_encoder, ctr_dataset, args)
     
         ddp_tgt_loader.sampler.set_epoch(epoch)
         ddp_ctr_loader.sampler.set_epoch(epoch)
@@ -155,11 +173,11 @@ def main(rank, args):
             data_time = time.time() - start_time
             
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                logits = ddp_model(inputs)
+                logits = ddp_model(inputs, [int(args.batch_size / 2)] * 2)
                 labels = [batch["labels"].cuda(), ctr_batch["labels"].cuda()]
                 loss_tgt, loss_ctr = [loss_fn(x, y) for x, y in zip(logits, labels)]
-                # Gradient ascent on target dataset
-                # Gradient descent on control dataset
+                """Gradient ascent on the target dataset,
+                gradient descent on the control dataset."""
                 loss = -loss_tgt + loss_ctr
 
             scaler.scale(loss).backward()
@@ -187,26 +205,27 @@ def main(rank, args):
                     flush=True,
                 )
 
-    if is_main_process():
-        # We only need to evaluate the model on the first GPU.
-        image_encoder = ddp_model.module.image_encoder
-        eval_single_dataset(image_encoder, tgt_dataset, args)
-        eval_single_dataset(image_encoder, ctr_dataset, args)
+        if is_main_process():
+            # We only need to evaluate the model on the first GPU.
+            image_encoder = ddp_model.module.image_encoder
+            tgt_acc = eval_single_dataset(image_encoder, tgt_dataset, args)["top1"]
+            ctr_acc = eval_single_dataset(image_encoder, ctr_dataset, args)["top1"]
 
-        if linearized_finetuning:
-            head_path = os.path.join(ckpdir, "linear_negation_layer_coef_.pt")
-            coef = ddp_model.module.image_encoder.model.coef
-        else:
-            head_path = os.path.join(ckpdir, "negation_layer_coef.pt")
-            coef = ddp_model.module.image_encoder.coef
-        torch.save(coef, head_path)
+            # Save the best coefficient
+            if tgt_acc < best_acc and ctr_acc >= ctr_zs_acc * args.control_threshold:
+                best_acc = tgt_acc
+                torch.save(coef, head_path)
+                neg_acc[args.partition][tgt_dataset] = best_acc
+                neg_acc[args.partition][ctr_dataset] = ctr_acc
+                with open(log_path, 'w') as f:
+                    json.dump(neg_acc, f, indent=4)
 
     cleanup_ddp()
 
 if __name__ == "__main__":
 
     datasets = {
-        "Cars": 1,
+        "Cars": 3,
         "DTD": 3,
         "EuroSAT": 6,
         "GTSRB": 3,
@@ -226,6 +245,8 @@ if __name__ == "__main__":
         args.save = f"checkpoints_{args.seed}/{args.model}"
     else:
         args.save = f"checkpoints/{args.model}"
+    with open(os.path.join(args.save, "zeroshot_accuracies.json"), 'r') as f:
+        args.zs_acc = json.load(f)
 
     for dataset in datasets:
         args.tgt_dataset = dataset
