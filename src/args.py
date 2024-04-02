@@ -55,6 +55,12 @@ def parse_arguments():
         help="Partitions of the dataset to use."
     )
     parser.add_argument(
+        "--control-threshold",
+        default=0.95,
+        type=float,
+        help="Percentage of accuracy on the control dataset to maintain."
+    )
+    parser.add_argument(
         "--train-dataset",
         default=None,
         type=lambda x: x.split(","),
