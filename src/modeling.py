@@ -149,8 +149,8 @@ class MultiHeadImageClassifier(torch.nn.Module):
         ]
         return outputs
 
-    def __call__(self, inputs, head_idx):
-        return self.forward(inputs, head_idx)
+    def __call__(self, inputs, num):
+        return self.forward(inputs, num)
 
     def save(self, filename):
         print(f"Saving image classifier to {filename}")
