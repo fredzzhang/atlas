@@ -1,6 +1,6 @@
 """Learn coefficients on a task vector for task negation,
-with supervised objective on a combination of the target
-dataset and the control dataset.
+using a supervised objective with gradient ascent on the
+target dataset and gradient descent on the control dataset.
 
 Fred Zhang <frederic.zhang@adelaide.edu.au>
 Australian Institute for Machine Learning
@@ -122,11 +122,11 @@ def main(rank, args):
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
 
     if linearized_finetuning:
-        head_path = os.path.join(ckpdir, "linear_learned_negation.pt")
-        log_path = os.path.join(args.save, "linear_learned_negations.json")
+        head_path = os.path.join(ckpdir, "learned_linear_negations.pt")
+        log_path = os.path.join(args.save, "learned_linear_negations.json")
         coef = ddp_model.module.image_encoder.model.coef
     else:
-        head_path = os.path.join(ckpdir, "learned_negation.pt")
+        head_path = os.path.join(ckpdir, "learned_negations.pt")
         log_path = os.path.join(args.save, "learned_negations.json")
         coef = ddp_model.module.image_encoder.coef
 
@@ -212,6 +212,7 @@ def main(rank, args):
                 f"{tgt_dataset}:top1": tgt_acc,
                 f"{ctr_dataset}:top1": ctr_acc,
                 f"{tgt_dataset}:normalised_top1": tgt_acc / args.ft_acc[tgt_dataset],
+                f"{ctr_dataset}:normalised_top1": ctr_acc / args.ft_acc[ctr_dataset],
             })
 
     # Log stats and test the model with the optimal coefficients.
