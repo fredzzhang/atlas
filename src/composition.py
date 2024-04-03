@@ -91,15 +91,17 @@ class WeightedLinearizedModel(nn.Module):
             dparams.append(dp)
 
         self.dparams = dparams
-        # TODO add this option
+        self.blockwise = blockwise
         if blockwise:
-            raise NotImplementedError()
+            self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params0)))
         else:
             self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors),))
 
-    def __call__(self, x) -> torch.Tensor:
-        """Computes the linearized model output using a first-order Taylor decomposition."""
-        dparams = [sum([p * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
+    def forward(self, x) -> torch.Tensor:
+        if self.blockwise:
+            dparams = [sum([p * c[i] for p, c in zip(dp, self.coef)]) for i, dp in enumerate(zip(*self.dparams))]
+        else:
+            dparams = [sum([p * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
         out, dp = jvp(
             lambda param: self.func0(param, x),
             (tuple(self.params0),),
