@@ -42,14 +42,14 @@ def main(rank, args):
         print("Using linearized fine-tuning.")
 
     ft_path = (
-        os.path.join(args.save, f"{tgt_dataset}Val", "linear_finetuned.pt")
+        os.path.join(args.save, tgt_dataset, "linear_finetuned.pt")
         if linearized_finetuning
-        else os.path.join(args.save, f"{tgt_dataset}Val", "finetuned.pt")
+        else os.path.join(args.save, tgt_dataset, "finetuned.pt")
     )
     zs_path = (
-        os.path.join(args.save, f"{tgt_dataset}Val", "linear_zeroshot.pt")
+        os.path.join(args.save, tgt_dataset, "linear_zeroshot.pt")
         if linearized_finetuning
-        else os.path.join(args.save, f"{tgt_dataset}Val", "zeroshot.pt")
+        else os.path.join(args.save, tgt_dataset, "zeroshot.pt")
     )
     if not os.path.exists(zs_path):
         raise ValueError(f"The checkpoint for the zero-shot model does not exist at {zs_path}.")
@@ -80,9 +80,6 @@ def main(rank, args):
     model.freeze_head()
     model = model.cuda()
 
-    if args.partition == "trainval":
-        tgt_dataset += "Val"
-        ctr_dataset += "Val"
     preprocess_fn = model.train_preprocess
     tgt_dataloader = get_dataloader(
         get_dataset(
@@ -144,8 +141,11 @@ def main(rank, args):
             with open(log_path) as f:
                 neg_acc = json.load(f)
         else:
-            neg_acc = {"trainval": {}, "traintest": {}}
+            neg_acc = {}
 
+    best_coef = None
+    neg_acc[tgt_dataset] = {}
+    val_acc = []
     for epoch in range(args.epoch):
     
         ddp_tgt_loader.sampler.set_epoch(epoch)
@@ -203,14 +203,33 @@ def main(rank, args):
             tgt_acc = eval_single_dataset(image_encoder, tgt_dataset, args)["top1"]
             ctr_acc = eval_single_dataset(image_encoder, ctr_dataset, args)["top1"]
 
-            # Save the best coefficient
+            # Save the best coefficients.
             if tgt_acc < best_acc and ctr_acc >= ctr_zs_acc * args.control_threshold:
                 best_acc = tgt_acc
-                torch.save(coef, head_path)
-                neg_acc[args.partition][tgt_dataset] = best_acc
-                neg_acc[args.partition][ctr_dataset] = ctr_acc
-                with open(log_path, 'w') as f:
-                    json.dump(neg_acc, f, indent=4)
+                best_coef = coef.data.clone()
+                torch.save(best_coef, head_path)
+            val_acc.append({
+                f"{tgt_dataset}:top1": tgt_acc,
+                f"{ctr_dataset}:top1": ctr_acc,
+                f"{tgt_dataset}:normalised_top1": tgt_acc / args.ft_acc[tgt_dataset],
+            })
+
+    # Log stats and test the model with the optimal coefficients.
+    if is_main_process():
+        neg_acc[tgt_dataset]["val"] = val_acc
+        image_encoder = ddp_model.module.image_encoder
+        if linearized_finetuning:
+            image_encoder.model.coef = torch.nn.Parameter(best_coef)
+        else:
+            image_encoder.coef = torch.nn.Parameter(best_coef)
+        neg_acc[tgt_dataset]["test"] = eval_single_dataset(
+            image_encoder, tgt_dataset.split("Val")[0], args
+        )["top1"]
+        neg_acc[tgt_dataset]["test_control"] = eval_single_dataset(
+            image_encoder, ctr_dataset.split("Val")[0], args
+        )["top1"]
+        with open(log_path, 'w') as f:
+            json.dump(neg_acc, f, indent=4)
 
     cleanup_ddp()
 
@@ -232,16 +251,18 @@ if __name__ == "__main__":
     args.batch_size = 64 if args.model == "ViT-L-14" else 128
     args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
     args.print_every = 10
-    args.ctr_dataset = "ImageNet"
+    args.ctr_dataset = "ImageNet" + "Val"
     if args.seed is not None:
         args.save = f"checkpoints_{args.seed}/{args.model}"
     else:
         args.save = f"checkpoints/{args.model}"
     with open(os.path.join(args.save, "zeroshot_accuracies.json"), 'r') as f:
         args.zs_acc = json.load(f)
+    with open(os.path.join(args.save, "ft_accuracies.json"), 'r') as f:
+        args.ft_acc = json.load(f)
 
     for dataset in datasets:
-        args.tgt_dataset = dataset
+        args.tgt_dataset = dataset + "Val"
         args.epoch = datasets[dataset]
         print("=" * 100)
         print(f"Learn task vector coefficients of {args.model} on {dataset}")
