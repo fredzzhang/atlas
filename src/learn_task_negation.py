@@ -16,7 +16,6 @@ from src.modeling import ImageEncoder, MultiHeadImageClassifier
 from src.task_vectors import LinearizedTaskVector, NonLinearTaskVector
 from src.composition import WeightedImageEncoder, WeightedLinearizedModel
 
-from src.utils import cosine_lr
 from src.args import parse_arguments
 from src.eval import eval_single_dataset
 from src.datasets.registry import get_dataset
@@ -30,9 +29,6 @@ def main(rank, args):
 
     tgt_dataset = args.tgt_dataset
     ctr_dataset = args.ctr_dataset
-    if args.partition == "trainval":
-        tgt_dataset += "Val"
-        ctr_dataset += "Val"
 
     ckpdir = os.path.join(args.save, tgt_dataset)
     os.makedirs(ckpdir, exist_ok=True)
@@ -46,14 +42,14 @@ def main(rank, args):
         print("Using linearized fine-tuning.")
 
     ft_path = (
-        os.path.join(args.save, tgt_dataset, "linear_finetuned.pt")
+        os.path.join(args.save, f"{tgt_dataset}Val", "linear_finetuned.pt")
         if linearized_finetuning
-        else os.path.join(args.save, tgt_dataset, "finetuned.pt")
+        else os.path.join(args.save, f"{tgt_dataset}Val", "finetuned.pt")
     )
     zs_path = (
-        os.path.join(args.save, tgt_dataset, "linear_zeroshot.pt")
+        os.path.join(args.save, f"{tgt_dataset}Val", "linear_zeroshot.pt")
         if linearized_finetuning
-        else os.path.join(args.save, tgt_dataset, "zeroshot.pt")
+        else os.path.join(args.save, f"{tgt_dataset}Val", "zeroshot.pt")
     )
     if not os.path.exists(zs_path):
         raise ValueError(f"The checkpoint for the zero-shot model does not exist at {zs_path}.")
@@ -84,6 +80,9 @@ def main(rank, args):
     model.freeze_head()
     model = model.cuda()
 
+    if args.partition == "trainval":
+        tgt_dataset += "Val"
+        ctr_dataset += "Val"
     preprocess_fn = model.train_preprocess
     tgt_dataloader = get_dataloader(
         get_dataset(
@@ -124,12 +123,6 @@ def main(rank, args):
 
     params = [p for p in ddp_model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
-    scheduler = cosine_lr(
-        optimizer,
-        args.lr,
-        args.warmup_length,
-        args.epoch * num_batches // args.num_grad_accumulation,
-    )
 
     if linearized_finetuning:
         head_path = os.path.join(ckpdir, "linear_learned_negation.pt")
@@ -178,12 +171,11 @@ def main(rank, args):
                 loss_tgt, loss_ctr = [loss_fn(x, y) for x, y in zip(logits, labels)]
                 """Gradient ascent on the target dataset,
                 gradient descent on the control dataset."""
-                loss = -loss_tgt + loss_ctr
+                loss = -loss_tgt + args.gamma * loss_ctr
 
             scaler.scale(loss).backward()
 
             if (i + 1) % args.num_grad_accumulation == 0:
-                scheduler(step)
 
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
                 scaler.step(optimizer)
@@ -225,14 +217,14 @@ def main(rank, args):
 if __name__ == "__main__":
 
     datasets = {
-        "Cars": 3,
-        "DTD": 3,
-        "EuroSAT": 6,
-        "GTSRB": 3,
+        "Cars": 10,
+        "DTD": 10,
+        "EuroSAT": 10,
+        "GTSRB": 10,
         "MNIST": 10,
-        "RESISC45": 2,
-        "SUN397": 1,
-        "SVHN": 1,
+        "RESISC45": 10,
+        "SUN397": 10,
+        "SVHN": 10,
     }
 
     args = parse_arguments()
