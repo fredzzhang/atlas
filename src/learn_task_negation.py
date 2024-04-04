@@ -139,12 +139,12 @@ def main(rank, args):
         print(f"=> Zero-shot accuracy on {ctr_dataset} (control): {100*ctr_zs_acc:.2f}%.")
         if os.path.exists(log_path):
             with open(log_path) as f:
-                neg_acc = json.load(f)
+                negation_acc = json.load(f)
         else:
-            neg_acc = {}
+            negation_acc = {}
 
     best_coef = None
-    neg_acc[tgt_dataset] = {}
+    negation_acc[tgt_dataset] = {}
     val_acc = []
     for epoch in range(args.epoch):
     
@@ -211,26 +211,26 @@ def main(rank, args):
             val_acc.append({
                 f"{tgt_dataset}:top1": tgt_acc,
                 f"{ctr_dataset}:top1": ctr_acc,
-                f"{tgt_dataset}:normalised_top1": tgt_acc / args.ft_acc[tgt_dataset],
-                f"{ctr_dataset}:normalised_top1": ctr_acc / args.ft_acc[ctr_dataset],
+                f"{tgt_dataset}:normalised_top1": tgt_acc / args.zs_acc[tgt_dataset],
+                f"{ctr_dataset}:normalised_top1": ctr_acc / args.zs_acc[ctr_dataset],
             })
 
     # Log stats and test the model with the optimal coefficients.
     if is_main_process():
-        neg_acc[tgt_dataset]["val"] = val_acc
+        negation_acc[tgt_dataset]["val"] = val_acc
         image_encoder = ddp_model.module.image_encoder
         if linearized_finetuning:
             image_encoder.model.coef = torch.nn.Parameter(best_coef)
         else:
             image_encoder.coef = torch.nn.Parameter(best_coef)
-        neg_acc[tgt_dataset]["test"] = eval_single_dataset(
+        negation_acc[tgt_dataset]["test"] = eval_single_dataset(
             image_encoder, tgt_dataset.split("Val")[0], args
         )["top1"]
-        neg_acc[tgt_dataset]["test_control"] = eval_single_dataset(
+        negation_acc[tgt_dataset]["test_control"] = eval_single_dataset(
             image_encoder, ctr_dataset.split("Val")[0], args
         )["top1"]
         with open(log_path, 'w') as f:
-            json.dump(neg_acc, f, indent=4)
+            json.dump(negation_acc, f, indent=4)
 
     cleanup_ddp()
 
