@@ -43,6 +43,12 @@ def parse_arguments():
         choices=["entropy", "cross_entropy"]
     )
     parser.add_argument(
+        "--gamma",
+        default=1.0,
+        type=float,
+        help="Weight on the loss term from the control dataset."
+    )
+    parser.add_argument(
         "--blockwise-coef",
         default=False,
         action="store_true",
