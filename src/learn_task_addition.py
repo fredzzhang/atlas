@@ -102,7 +102,7 @@ def main(rank, args):
 
     # Distribute the data and model across the GPUs.
     ddp_prim_loader = distribute_loader(prim_loader)
-    ddp_rest_loader = [distribute_loader(dataloader) for dataloader in dataloaders]
+    ddp_rmng_loader = [distribute_loader(dataloader) for dataloader in dataloaders]
     ddp_model = torch.nn.parallel.DistributedDataParallel(
         model,
         device_ids=[rank],
@@ -134,18 +134,18 @@ def main(rank, args):
     if is_main_process():
         for dataset in datasets:
             print(
-                f"=> Zero-shot accuracy on {dataset}:\t{100*zs_acc[dataset]:.2f}%, "
+                f"=> Zero-shot accuracy on {dataset:<12}:\t{100*zs_acc[dataset]:.2f}%, "
                 f"normalised by f.t. acc.: {100*zs_acc_norm[dataset]:.2f}%.")
     best_coef = None
     val_acc = []
     for epoch in range(args.epoch):
     
         ddp_prim_loader.sampler.set_epoch(epoch)
-        for loader in ddp_rest_loader:
+        for loader in ddp_rmng_loader:
             loader.sampler.set_epoch(epoch)
-        rest_iter = [iter(loader) for loader in ddp_rest_loader]
+        rmng_iter = [iter(loader) for loader in ddp_rmng_loader]
         for i, batch in enumerate(ddp_prim_loader):
-            rest_batch = [next(r_iter) for r_iter in rest_iter]
+            rmng_batch = [next(r_iter) for r_iter in rmng_iter]
             start_time = time.time()
 
             step = (
@@ -154,18 +154,18 @@ def main(rank, args):
             )
 
             batch = maybe_dictionarize(batch)
-            rest_batch = [maybe_dictionarize(r_batch) for r_batch in rest_batch]
+            rmng_batch = [maybe_dictionarize(r_batch) for r_batch in rmng_batch]
             inputs = torch.cat(
                 [batch["images"].cuda(),] +
-                [r_batch["images"].cuda() for r_batch in rest_batch]
+                [r_batch["images"].cuda() for r_batch in rmng_batch]
             )
             data_time = time.time() - start_time
             
             with torch.autocast(device_type='cuda', dtype=torch.float16):
                 logits = ddp_model(inputs, [int(args.batch_size / n_datasets)] * n_datasets)
-                labels = [batch["labels"].cuda(),] + [r_batch["labels"].cuda() for r_batch in rest_batch]
-                all_loss = [loss_fn(x, y) for x, y in zip(logits, labels)]
-                loss = sum(all_loss)
+                labels = [batch["labels"].cuda(),] + [r_batch["labels"].cuda() for r_batch in rmng_batch]
+                all_losses = [loss_fn(x, y) for x, y in zip(logits, labels)]
+                loss = sum(all_losses)
 
             scaler.scale(loss).backward()
 
@@ -184,9 +184,10 @@ def main(rank, args):
                 and is_main_process()
             ):
                 percent_complete = 100 * (i + 1) / len(ddp_prim_loader)
+                print_losses = str([round(x.item(), 4) for x in all_losses])
                 print(
                     f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(ddp_prim_loader)}]\t"      # noqa: E501
-                    f"Losses: {[round(x.item(), 4) for x in all_loss]}\t"                                   # noqa: E501
+                    f"Losses: {print_losses:<72}\t"                                                         # noqa: E501
                     f"Data (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",                                # noqa: E501
                     flush=True,
                 )
@@ -221,28 +222,32 @@ def main(rank, args):
     # Log stats and test the model with the optimal coefficients.
     datasets = [dataset.replace("Val", "") for dataset in datasets]
     if is_main_process():
-        add_acc = {"val": val_acc}
+        addition_acc = {"val": val_acc}
         image_encoder = ddp_model.module.image_encoder
         if linearized_finetuning:
             image_encoder.model.coef = torch.nn.Parameter(best_coef)
         else:
             image_encoder.coef = torch.nn.Parameter(best_coef)
+
         test_acc = {dataset:
             eval_single_dataset(image_encoder, dataset, args)["top1"]
             for dataset in datasets
         }
+
         test_acc_norm = {
             f"{dataset}:normalised_top1": acc / args.ft_acc[dataset]
-            for dataset, acc in zip(datasets, test_acc)
+            for dataset, acc in zip(datasets, test_acc.values())
         }
+
         test_acc.update(test_acc_norm)
         test_acc.update({
-            "avg_top1": avg(test_acc),
-            "avg_normalised_top1": avg(test_acc_norm)
+            "avg_top1": avg(test_acc.values()),
+            "avg_normalised_top1": avg(test_acc_norm.values())
         })
-        add_acc["test"] = test_acc
+
+        addition_acc["test"] = test_acc
         with open(log_path, 'w') as f:
-            json.dump(add_acc, f, indent=4)
+            json.dump(addition_acc, f, indent=4)
 
     cleanup_ddp()
 
