@@ -23,13 +23,16 @@ from src.heads import get_classification_head
 from src.datasets.common import get_dataloader, maybe_dictionarize
 from src.distributed import cleanup_ddp, distribute_loader, is_main_process, setup_ddp
 
+def avg(x):
+    return sum(x) / len(x)
+
 def main(rank, args):
 
     setup_ddp(rank, args.world_size, port=args.port)
 
-    datasets = args.datasets
-
-    ckpdir = os.path.join(args.save, f"combined_{len(datasets)}")
+    datasets = [f"{dataset}Val" for dataset in args.datasets]
+    n_datasets = len(datasets)
+    ckpdir = os.path.join(args.save, f"combined_{n_datasets}")
     os.makedirs(ckpdir, exist_ok=True)
 
     assert args.finetuning_mode in [
@@ -43,12 +46,12 @@ def main(rank, args):
     task_vectors = []
     for dataset in datasets:
         if args.finetuning_mode == "linear":
-            pretrained_checkpoint = f"{args.save}/{dataset}Val/linear_zeroshot.pt"
-            finetuned_checkpoint = f"{args.save}/{dataset}Val/linear_finetuned.pt"
+            pretrained_checkpoint = f"{args.save}/{dataset}/linear_zeroshot.pt"
+            finetuned_checkpoint = f"{args.save}/{dataset}/linear_finetuned.pt"
             task_vectors.append(LinearizedTaskVector(pretrained_checkpoint, finetuned_checkpoint))
         else:
-            pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
-            finetuned_checkpoint = f"{args.save}/{dataset}Val/finetuned.pt"
+            pretrained_checkpoint = f"{args.save}/{dataset}/zeroshot.pt"
+            finetuned_checkpoint = f"{args.save}/{dataset}/finetuned.pt"
             task_vectors.append(NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint))
 
     if args.finetuning_mode == "linear":
@@ -70,7 +73,7 @@ def main(rank, args):
         get_dataset(
             dataset, preprocess_fn,
             location=args.data_location,
-            batch_size=int(args.batch_size / len(datasets)),
+            batch_size=int(args.batch_size / n_datasets),
             num_workers=2),
         is_train=True, args=args, image_encoder=None
     ) for dataset in datasets]
@@ -123,29 +126,26 @@ def main(rank, args):
 
     scaler = GradScaler()
     zs_acc = args.zs_acc
-    zs_acc_norm = [args.zs_acc[dataset] / args.ft_acc[dataset] for dataset in datasets]
-    best_acc = sum(zs_acc_norm) / len(datasets)
+    zs_acc_norm = {
+        dataset: args.zs_acc[dataset] / args.ft_acc[dataset]
+        for dataset in datasets
+    }
+    best_acc = avg(zs_acc_norm.values())
     if is_main_process():
         for dataset in datasets:
             print(
-                f"=> Zero-shot accuracy on {dataset}: {100*zs_acc[dataset]:.2f}%,"
-                f"normalised: {100*zs_acc_norm[dataset]:.2f}%.")
-        if os.path.exists(log_path):
-            with open(log_path) as f:
-                add_acc = json.load(f)
-        else:
-            add_acc = {}
-
+                f"=> Zero-shot accuracy on {dataset}:\t{100*zs_acc[dataset]:.2f}%, "
+                f"normalised by f.t. acc.: {100*zs_acc_norm[dataset]:.2f}%.")
     best_coef = None
-    neg_acc[tgt_dataset] = {}
     val_acc = []
     for epoch in range(args.epoch):
     
-        ddp_tgt_loader.sampler.set_epoch(epoch)
-        ddp_ctr_loader.sampler.set_epoch(epoch)
-        ctr_iter = iter(ddp_ctr_loader)
-        for i, batch in enumerate(ddp_tgt_loader):
-            ctr_batch = next(ctr_iter)
+        ddp_prim_loader.sampler.set_epoch(epoch)
+        for loader in ddp_rest_loader:
+            loader.sampler.set_epoch(epoch)
+        rest_iter = [iter(loader) for loader in ddp_rest_loader]
+        for i, batch in enumerate(ddp_prim_loader):
+            rest_batch = [next(r_iter) for r_iter in rest_iter]
             start_time = time.time()
 
             step = (
@@ -154,17 +154,18 @@ def main(rank, args):
             )
 
             batch = maybe_dictionarize(batch)
-            ctr_batch = maybe_dictionarize(ctr_batch)
-            inputs = torch.cat([batch["images"].cuda(), ctr_batch["images"].cuda()])
+            rest_batch = [maybe_dictionarize(r_batch) for r_batch in rest_batch]
+            inputs = torch.cat(
+                [batch["images"].cuda(),] +
+                [r_batch["images"].cuda() for r_batch in rest_batch]
+            )
             data_time = time.time() - start_time
             
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                logits = ddp_model(inputs, [int(args.batch_size / 2)] * 2)
-                labels = [batch["labels"].cuda(), ctr_batch["labels"].cuda()]
-                loss_tgt, loss_ctr = [loss_fn(x, y) for x, y in zip(logits, labels)]
-                """Gradient ascent on the target dataset,
-                gradient descent on the control dataset."""
-                loss = -loss_tgt + args.gamma * loss_ctr
+                logits = ddp_model(inputs, [int(args.batch_size / n_datasets)] * n_datasets)
+                labels = [batch["labels"].cuda(),] + [r_batch["labels"].cuda() for r_batch in rest_batch]
+                all_loss = [loss_fn(x, y) for x, y in zip(logits, labels)]
+                loss = sum(all_loss)
 
             scaler.scale(loss).backward()
 
@@ -182,57 +183,75 @@ def main(rank, args):
                 and ((i + 1) % args.num_grad_accumulation == 0)
                 and is_main_process()
             ):
-                percent_complete = 100 * (i + 1) / len(ddp_tgt_loader)
+                percent_complete = 100 * (i + 1) / len(ddp_prim_loader)
                 print(
-                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(ddp_tgt_loader)}]\t"   # noqa: E501
-                    f"Loss (tgt.): {loss_tgt.item():.6f}\tLoss (ctr.): {loss_ctr.item():.6f}\t"         # noqa: E501
-                    f"Data (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",                            # noqa: E501
+                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(ddp_prim_loader)}]\t"      # noqa: E501
+                    f"Losses: {[round(x.item(), 4) for x in all_loss]}\t"                                   # noqa: E501
+                    f"Data (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",                                # noqa: E501
                     flush=True,
                 )
 
         if is_main_process():
             # We only need to evaluate the model on the first GPU.
             image_encoder = ddp_model.module.image_encoder
-            tgt_acc = eval_single_dataset(image_encoder, tgt_dataset, args)["top1"]
-            ctr_acc = eval_single_dataset(image_encoder, ctr_dataset, args)["top1"]
+            all_acc = [eval_single_dataset(
+                image_encoder, dataset, args
+                )["top1"] for dataset in datasets
+            ]
+            all_acc_norm = [
+                acc / args.ft_acc[dataset]
+                for acc, dataset in zip(all_acc, datasets)
+            ]
 
             # Save the best coefficients.
-            if tgt_acc < best_acc and ctr_acc >= ctr_zs_acc * args.control_threshold:
-                best_acc = tgt_acc
+            if avg(all_acc_norm) > best_acc:
+                best_acc = avg(all_acc_norm)
                 best_coef = coef.data.clone()
                 torch.save(best_coef, head_path)
-            val_acc.append({
-                f"{tgt_dataset}:top1": tgt_acc,
-                f"{ctr_dataset}:top1": ctr_acc,
-                f"{tgt_dataset}:normalised_top1": tgt_acc / args.ft_acc[tgt_dataset],
-                f"{ctr_dataset}:normalised_top1": ctr_acc / args.ft_acc[ctr_dataset],
+            val_acc = {f"{dataset}:top1": acc for dataset, acc in zip(datasets, all_acc)}
+            val_acc.update({
+                f"{dataset}:normalised_top1": acc
+                for dataset, acc in zip(datasets, all_acc_norm)
+            })
+            val_acc.update({
+                "avg:top1": avg(all_acc),
+                "avg_normalised_top1": avg(all_acc_norm)
             })
 
     # Log stats and test the model with the optimal coefficients.
+    datasets = [dataset.replace("Val", "") for dataset in datasets]
     if is_main_process():
-        neg_acc[tgt_dataset]["val"] = val_acc
+        add_acc = {"val": val_acc}
         image_encoder = ddp_model.module.image_encoder
         if linearized_finetuning:
             image_encoder.model.coef = torch.nn.Parameter(best_coef)
         else:
             image_encoder.coef = torch.nn.Parameter(best_coef)
-        neg_acc[tgt_dataset]["test"] = eval_single_dataset(
-            image_encoder, tgt_dataset.split("Val")[0], args
-        )["top1"]
-        neg_acc[tgt_dataset]["test_control"] = eval_single_dataset(
-            image_encoder, ctr_dataset.split("Val")[0], args
-        )["top1"]
+        test_acc = {dataset:
+            eval_single_dataset(image_encoder, dataset, args)["top1"]
+            for dataset in datasets
+        }
+        test_acc_norm = {
+            f"{dataset}:normalised_top1": acc / args.ft_acc[dataset]
+            for dataset, acc in zip(datasets, test_acc)
+        }
+        test_acc.update(test_acc_norm)
+        test_acc.update({
+            "avg_top1": avg(test_acc),
+            "avg_normalised_top1": avg(test_acc_norm)
+        })
+        add_acc["test"] = test_acc
         with open(log_path, 'w') as f:
-            json.dump(neg_acc, f, indent=4)
+            json.dump(add_acc, f, indent=4)
 
     cleanup_ddp()
 
 if __name__ == "__main__":
 
-    datasets = {
+    datasets = [
         "Cars", "DTD", "EuroSAT", "GTSRB",
         "MNIST", "RESISC45", "SUN397", "SVHN",
-    }
+    ]
 
     args = parse_arguments()
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
