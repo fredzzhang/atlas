@@ -116,8 +116,8 @@ def main(rank, args):
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
 
     if linearized_finetuning:
-        head_path = os.path.join(ckpdir, "linear_learned_additions.pt")
-        log_path = os.path.join(args.save, "linear_learned_additions.json")
+        head_path = os.path.join(ckpdir, "learned_linear_additions.pt")
+        log_path = os.path.join(args.save, "learned_linear_additions.json")
         coef = ddp_model.module.image_encoder.model.coef
     else:
         head_path = os.path.join(ckpdir, "learned_additions.pt")
@@ -209,15 +209,16 @@ def main(rank, args):
                 best_acc = avg(all_acc_norm)
                 best_coef = coef.data.clone()
                 torch.save(best_coef, head_path)
-            val_acc = {f"{dataset}:top1": acc for dataset, acc in zip(datasets, all_acc)}
-            val_acc.update({
+            cur_acc = {f"{dataset}:top1": acc for dataset, acc in zip(datasets, all_acc)}
+            cur_acc.update({
                 f"{dataset}:normalised_top1": acc
                 for dataset, acc in zip(datasets, all_acc_norm)
             })
-            val_acc.update({
+            cur_acc.update({
                 "avg:top1": avg(all_acc),
                 "avg_normalised_top1": avg(all_acc_norm)
             })
+            val_acc.append(cur_acc)
 
     # Log stats and test the model with the optimal coefficients.
     datasets = [dataset.replace("Val", "") for dataset in datasets]
