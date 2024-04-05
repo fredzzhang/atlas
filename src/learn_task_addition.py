@@ -14,8 +14,8 @@ from torch.cuda.amp import GradScaler
 from src.linearize import LinearizedImageEncoder
 from src.modeling import ImageEncoder, MultiHeadImageClassifier
 from src.task_vectors import LinearizedTaskVector, NonLinearTaskVector
-from src.composition import WeightedImageEncoder, WeightedLinearizedModel
 
+from src.utils import torch_load
 from src.args import parse_arguments
 from src.eval import eval_single_dataset
 from src.datasets.registry import get_dataset
@@ -58,18 +58,18 @@ def main(rank, args):
         with open(os.path.join(args.save, "linear_ft_accuracies.json"), 'r') as f:
             args.ft_acc = json.load(f)
         image_encoder = LinearizedImageEncoder(args, keep_lang=False)
-        image_encoder.model = WeightedLinearizedModel(
-            image_encoder.model, task_vectors,
-            device=rank, blockwise=args.blockwise_coef
-        )
+        # image_encoder.model = WeightedLinearizedModel(
+        #     image_encoder.model, task_vectors,
+        #     device=rank, blockwise=args.blockwise_coef
+        # )
     else:
         with open(os.path.join(args.save, "ft_accuracies.json"), 'r') as f:
             args.ft_acc = json.load(f)
         image_encoder = ImageEncoder(args)
-        image_encoder = WeightedImageEncoder(
-            image_encoder, task_vectors,
-            device=rank, blockwise=args.blockwise_coef
-        )
+        # image_encoder = WeightedImageEncoder(
+        #     image_encoder, task_vectors,
+        #     device=rank, blockwise=args.blockwise_coef
+        # )
 
     preprocess_fn = image_encoder.train_preprocess
     # Prepare all dataloaders.
@@ -110,7 +110,7 @@ def main(rank, args):
     ddp_model = torch.nn.parallel.DistributedDataParallel(
         model,
         device_ids=[rank],
-        find_unused_parameters=False,
+        find_unused_parameters=True,
         output_device=rank,
     )
 
@@ -120,13 +120,13 @@ def main(rank, args):
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
 
     if linearized_finetuning:
-        head_path = os.path.join(ckpdir, "learned_linear_additions.pt")
-        log_path = os.path.join(args.save, "learned_linear_additions.json")
-        coef = ddp_model.module.image_encoder.model.coef
+        ft_path = os.path.join(ckpdir, "finetuned_linear_additions.pt")
+        log_path = os.path.join(args.save, "finetuned_linear_additions.json")
+        # coef = ddp_model.module.image_encoder.model.coef
     else:
-        head_path = os.path.join(ckpdir, "learned_additions.pt")
-        log_path = os.path.join(args.save, "learned_additions.json")
-        coef = ddp_model.module.image_encoder.coef
+        ft_path = os.path.join(ckpdir, "finetuned_additions.pt")
+        log_path = os.path.join(args.save, "finetuned_additions.json")
+        # coef = ddp_model.module.image_encoder.coef
 
     scaler = GradScaler()
     zs_acc = args.zs_acc
@@ -140,7 +140,6 @@ def main(rank, args):
             print(
                 f"=> Zero-shot accuracy on {dataset:<12}:\t{100*zs_acc[dataset]:.2f}%, "
                 f"normalised by f.t. acc.: {100*zs_acc_norm[dataset]:.2f}%.")
-    best_coef = None
     val_acc = []
     for epoch in range(args.epoch):
     
@@ -211,8 +210,9 @@ def main(rank, args):
             # Save the best coefficients.
             if avg(all_acc_norm) > best_acc:
                 best_acc = avg(all_acc_norm)
-                best_coef = coef.data.clone()
-                torch.save(best_coef, head_path)
+                image_encoder.save(ft_path)
+                # best_coef = coef.data.clone()
+                # torch.save(best_coef, head_path)
             cur_acc = {f"{dataset}:top1": acc for dataset, acc in zip(datasets, all_acc)}
             cur_acc.update({
                 f"{dataset}:normalised_top1": acc
@@ -229,10 +229,14 @@ def main(rank, args):
     if is_main_process():
         addition_acc = {"val": val_acc}
         image_encoder = ddp_model.module.image_encoder
+        # if linearized_finetuning:
+        #     image_encoder.model.coef = torch.nn.Parameter(best_coef)
+        # else:
+        #     image_encoder.coef = torch.nn.Parameter(best_coef)
         if linearized_finetuning:
-            image_encoder.model.coef = torch.nn.Parameter(best_coef)
+            image_encoder = LinearizedImageEncoder.load(ft_path)
         else:
-            image_encoder.coef = torch.nn.Parameter(best_coef)
+            image_encoder = torch_load(ft_path)
 
         test_acc = {dataset:
             eval_single_dataset(image_encoder, dataset, args)["top1"]
@@ -276,7 +280,7 @@ if __name__ == "__main__":
         args.zs_acc = json.load(f)
 
     print("=" * 100)
-    print(f"Learn task vector coefficients of {args.model} on {len(datasets)} datasets:")
+    print(f"Fine-tuning CLIP {args.model} on {len(datasets)} datasets:")
     for i, x in enumerate(datasets):
         print(f"{i + 1}. {x}")
     print("=" * 100)
