@@ -271,7 +271,7 @@ if __name__ == "__main__":
     args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
     args.print_every = 10
     args.datasets = datasets
-    args.epoch = 10
+    args.epoch = 20
     if args.seed is not None:
         args.save = f"checkpoints_{args.seed}/{args.model}"
     else:
