@@ -1,3 +1,13 @@
+"""Definition of image encoders and classifier models.
+
+Fred Zhang <frederic.zhang@adelaide.edu.au>
+Australian Institute for Machine Learning
+
+Modified from the codebase by Ilharco et al. and Guillermo Ortiz-Jimenez et al.,
+at https://github.com/mlfoundations/task_vectors and
+https://github.com/gortizji/tangent_task_arithmetic
+"""
+
 import open_clip
 import torch
 
@@ -47,18 +57,6 @@ class ImageEncoder(torch.nn.Module):
         state_dict = torch.load(filename, map_location="cpu")
         return cls.load(model_name, state_dict)
 
-    @classmethod
-    def load_from_state_dict(cls, model_name, state_dict):
-        (
-            self.model,
-            self.train_preprocess,
-            self.val_preprocess,
-        ) = open_clip.create_model_and_transforms(
-            name, pretrained=pretrained, cache_dir=args.openclip_cachedir
-        )
-        self.model.load_from_state_dict(state_dict)
-
-
 class ClassificationHead(torch.nn.Linear):
     def __init__(self, normalize, weights, biases=None):
         output_size, input_size = weights.shape
@@ -87,7 +85,6 @@ class ClassificationHead(torch.nn.Linear):
     def load(cls, filename):
         print(f"Loading classification head from {filename}")
         return utils.torch_load(filename)
-
 
 class ImageClassifier(torch.nn.Module):
     def __init__(self, image_encoder, classification_head):
@@ -119,7 +116,6 @@ class ImageClassifier(torch.nn.Module):
         print(f"Loading image classifier from {filename}")
         return utils.torch_load(filename)
 
-
 class MultiHeadImageClassifier(torch.nn.Module):
     def __init__(self, image_encoder, classification_heads):
         super().__init__()
@@ -134,13 +130,27 @@ class MultiHeadImageClassifier(torch.nn.Module):
             self.classification_heads[idx].weight.requires_grad_(False)
             self.classification_heads[idx].bias.requires_grad_(False)
 
-    def forward(self, inputs, head_idx):
+    def forward(self, inputs, num):
+        """Process inputs with different classification heads.
+
+        Parameters:
+        -----------
+        inputs: Tensor
+            Input images.
+        num: List[int]
+            Number of images for each head to process. The length must be
+            equal to the number of heads.
+        """
         features = self.image_encoder(inputs)
-        outputs = self.classification_heads[head_idx](features)
+        split_features = features.split(num)
+        outputs = [
+            head(feat) for feat, head in
+            zip(split_features, self.classification_heads)
+        ]
         return outputs
 
-    def __call__(self, inputs, head_idx):
-        return self.forward(inputs, head_idx)
+    def __call__(self, inputs, num):
+        return self.forward(inputs, num)
 
     def save(self, filename):
         print(f"Saving image classifier to {filename}")
