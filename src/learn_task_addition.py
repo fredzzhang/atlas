@@ -55,12 +55,16 @@ def main(rank, args):
             task_vectors.append(NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint))
 
     if args.finetuning_mode == "linear":
+        with open(os.path.join(args.save, "linear_ft_accuracies.json"), 'r') as f:
+            args.ft_acc = json.load(f)
         image_encoder = LinearizedImageEncoder(args, keep_lang=False)
         image_encoder.model = WeightedLinearizedModel(
             image_encoder.model, task_vectors,
             device=rank, blockwise=args.blockwise_coef
         )
     else:
+        with open(os.path.join(args.save, "ft_accuracies.json"), 'r') as f:
+            args.ft_acc = json.load(f)
         image_encoder = ImageEncoder(args)
         image_encoder = WeightedImageEncoder(
             image_encoder, task_vectors,
@@ -234,6 +238,7 @@ def main(rank, args):
             eval_single_dataset(image_encoder, dataset, args)["top1"]
             for dataset in datasets
         }
+        test_acc["avg_top1"] = avg(test_acc.values())
 
         test_acc_norm = {
             f"{dataset}:normalised_top1": acc / args.ft_acc[dataset]
@@ -241,10 +246,7 @@ def main(rank, args):
         }
 
         test_acc.update(test_acc_norm)
-        test_acc.update({
-            "avg_top1": avg(test_acc.values()),
-            "avg_normalised_top1": avg(test_acc_norm.values())
-        })
+        test_acc["avg_normalised_top1"] = avg(test_acc_norm.values())
 
         addition_acc["test"] = test_acc
         with open(log_path, 'w') as f:
@@ -272,8 +274,6 @@ if __name__ == "__main__":
         args.save = f"checkpoints/{args.model}"
     with open(os.path.join(args.save, "zeroshot_accuracies.json"), 'r') as f:
         args.zs_acc = json.load(f)
-    with open(os.path.join(args.save, "ft_accuracies.json"), 'r') as f:
-        args.ft_acc = json.load(f)
 
     print("=" * 100)
     print(f"Learn task vector coefficients of {args.model} on {len(datasets)} datasets:")
