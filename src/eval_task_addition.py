@@ -1,18 +1,7 @@
-"""
-Evaluation on the composition of task vectors
-
-Fred Zhang <frederic.zhang@adelaide.edu.au>
-Australian Institute for Machine Learning
-
-Modified from the codebase by Ilharco et al. and Guillermo Ortiz-Jimenez et al.,
-at https://github.com/mlfoundations/task_vectors and
-https://github.com/gortizji/tangent_task_arithmetic
-"""
-
 import json
 import os
 
-from utils import find_optimal_coef
+from src.utils import find_optimal_coef
 
 from src.args import parse_arguments
 from src.eval import evaluate_task_vector, evaluate_task_vector_at_coef
@@ -47,8 +36,14 @@ with open(os.path.join(args.save, "zeroshot_accuracies.json")) as f:
     pretrained_accuracies = json.load(f)
 
 eval_datasets = [
-    "01234_MNIST",
-    "56789_MNIST",
+    "Cars",
+    "DTD",
+    "EuroSAT",
+    "GTSRB",
+    "MNIST",
+    "RESISC45",
+    "SVHN",
+    "SUN397",
 ]
 
 task_vectors = []
@@ -69,10 +64,6 @@ for dataset in eval_datasets:
 
 task_vector = sum(task_vectors)
 
-# Evaluate on the full dataset
-if args.eval_on_full:
-    eval_datasets = [eval_datasets[0].split('_')[-1],]
-
 args.eval_datasets = [dataset + "Val" for dataset in eval_datasets]
 args.control_dataset = None
 
@@ -86,10 +77,9 @@ val_metrics = evaluate_task_vector(
 
 optimal_coef = find_optimal_coef(
     val_metrics,
-    metric="avg_top1",
+    metric="avg_normalized_top1",
     minimize=False,
 )
-print(f"=> The optimal coefficient is {optimal_coef:.2f}.")
 
 # Evaluate on the test set with the optimal coefficient.
 args.eval_datasets = [dataset for dataset in eval_datasets]
@@ -102,7 +92,7 @@ test_metrics = evaluate_task_vector_at_coef(
 )
 
 print("=" * 100)
-# print(f"Test normalized accuracy: {test_metrics['avg_normalized_top1']}")
+print(f"Test normalized accuracy: {test_metrics['avg_normalized_top1']}")
 print(f"Test absolute accuracy: {test_metrics['avg_top1']}")
 additive_accuracies = {"test": test_metrics, "val": val_metrics}
 
