@@ -128,8 +128,9 @@ def finetune(rank, args):
             else os.path.join(ckpdir, "zeroshot.pt")
         )
         ddp_model.module.image_encoder.save(model_path)
-
-    for epoch in range(args.epochs):
+        
+    scaler = torch.cuda.amp.GradScaler()
+    for epoch in range(args.epochs):        
         ddp_model.train()
 
         for i, batch in enumerate(ddp_loader):
@@ -144,19 +145,22 @@ def finetune(rank, args):
             inputs = batch["images"].cuda()
             labels = batch["labels"].cuda()
             data_time = time.time() - start_time
+            with torch.autocast(device_type="cuda"):
+                logits = ddp_model(inputs)
+                
+                loss = loss_fn(logits, labels)
 
-            logits = ddp_model(inputs)
-
-            loss = loss_fn(logits, labels)
-
-            loss.backward()
+            #loss.backward()
+            scaler.scale(loss).backward()
 
             if (i + 1) % args.num_grad_accumulation == 0:
                 scheduler(step)
 
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
-                optimizer.step()
-                optimizer.zero_grad()
+                scaler.step(optimizer)
+                scaler.update()
+                #optimizer.step()
+                optimizer.zero_grad()              
 
             batch_time = time.time() - start_time
 
@@ -187,7 +191,7 @@ def finetune(rank, args):
 
         # Test the model each epoch 
         image_encoder = ddp_model.module.image_encoder
-        eval_single_dataset(image_encoder, train_dataset, args)
+        eval_single_dataset(image_encoder, train_dataset, dataset, args)
 
     if args.save is not None and is_main_process():
         zs_path = (
@@ -207,32 +211,30 @@ def finetune(rank, args):
 
 
 if __name__ == "__main__":
-    train_datasets = [
-        # "Cars",
-        # "DTD",
-        # "EuroSAT",
-        # "GTSRB",
-        # "MNIST",
-        # "RESISC45",
-        # "SUN397",
-        # "SVHN",
-        "01234_MNIST",
-        "56789_MNIST",
-    ]
     epochs = {
-        # "Cars": 35,
-        # "DTD": 76,
-        # "EuroSAT": 12,
-        # "GTSRB": 11,
-        # "MNIST": 5,
-        # "RESISC45": 15,
-        # "SUN397": 14,
-        # "SVHN": 4,
-        "01234_MNIST": 5,
-        "56789_MNIST": 5,
+        "Cars": 35,
+        "DTD": 76,
+        "EuroSAT": 12,
+        "GTSRB": 11,
+        "MNIST": 5,
+        "RESISC45": 15,
+        "SUN397": 14,
+        "SVHN": 4,
+        "CIFAR10": 5,
+        "CIFAR100": 6,
+        "ImageNet": 10,
+        "STL10": 4,
+        "Food101": 15,
+        "Caltech256": 8,
+        "FGVCAircraft": 60,
+        "Flowers102": 40,
+        "OxfordIIITPet": 5,
+        "CUB200": 20,
+        "PascalVOC": 10,
+        "Country211": 15
     }
 
-    for dataset in train_datasets:
+    for dataset in epochs:
         args = parse_arguments()
 
         # HACK: Some command line arguments are overwritten by defaults here.
@@ -241,8 +243,8 @@ if __name__ == "__main__":
         args.train_dataset = dataset + "Val"
 
         # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
-        args.batch_size = 64 if args.model == "ViT-L-14" else 128
-        args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
+        args.batch_size = 32 if args.model == "ViT-L-14" else 128
+        args.num_grad_accumulation = 4 if args.model == "ViT-L-14" else 1
 
         if args.seed is not None:
             args.save = f"checkpoints_{args.seed}/{args.model}"

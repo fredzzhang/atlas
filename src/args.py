@@ -170,16 +170,16 @@ def parse_arguments():
         help="Compute coefs on a subset of the trainset."
     )
     parser.add_argument(
-        "--random-tv",
-        default=False,
-        action='store_true',
-        help="Ablate on random task vectors."
-    )
-    parser.add_argument(
         "--l1",
         default=False,
         action='store_true',
         help="L1 reg"
+    )
+    parser.add_argument(
+        "--lp",
+        default=False,
+        action='store_true',
+        help="Learn LP++ classifier"
     )
     parser.add_argument(
         "--scale",
@@ -188,10 +188,40 @@ def parse_arguments():
         help="Scale the task vectors"
     )
     parser.add_argument(
+        "--attn",
+        default=False,
+        action='store_true',
+        help="Batch norm or LayerNorm tuning"
+    )
+    parser.add_argument(
+        "--tip-ft",
+        default=False,
+        action='store_true',
+        help="Finetune the task vector using TIP adaptors"
+    )
+    parser.add_argument(
+        "--tip-cot",
+        default=False,
+        action='store_true',
+        help="Co-train the task vector with TIP adaptors"
+    )
+    parser.add_argument(
+        "--tip-only",
+        default=False,
+        action='store_true',
+        help="TIP adaptors ours with learned alpha/beta, must be used together with --tip-ft"
+    )
+    parser.add_argument(
         "--add-random-tv",
         type=int,
         default=None,
         help="Add the specified amount random task vectors on top of the existing ones."
+    )
+    parser.add_argument(
+        "--semi",
+        type=int,
+        default=None,
+        help="N of few-shot samples per class"
     )
     parser.add_argument(
         "--optimally-random",

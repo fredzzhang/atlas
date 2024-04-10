@@ -12,7 +12,8 @@ class TwoStreamBatchSampler(Sampler):
     def __init__(self, primary_indices, secondary_indices, batch_size):
         self.primary_indices = primary_indices
         self.secondary_indices = secondary_indices
-        self.inter_batch_size = batch_size // 2
+        self.inter_batch_size = 3 * batch_size // 4
+        self.batch_size = batch_size
 
     def __iter__(self):
         primary_iter = iterate_once(self.primary_indices)
@@ -20,12 +21,29 @@ class TwoStreamBatchSampler(Sampler):
         return (
             primary_batch + secondary_batch
             for (primary_batch, secondary_batch)
-            in  zip(grouper(primary_iter, self.inter_batch_size),
-                    grouper(secondary_iter, self.inter_batch_size))
+            in  zip(grouper(primary_iter, 3*self.batch_size // 4),
+                    grouper(secondary_iter,  self.batch_size // 4))
         )
 
     def __len__(self):
         return len(self.primary_indices) // self.inter_batch_size
+
+class SubsetSampler(Sampler):
+    r"""Samples elements from a given list of indices, without replacement.
+
+    Args:
+        indices (sequence): a sequence of indices
+    """
+
+    def __init__(self, indices):
+        self.indices = indices
+
+    def __iter__(self):
+        for i in self.indices:
+            yield i
+
+    def __len__(self):
+        return len(self.indices)
     
 def iterate_once(iterable):
    
@@ -44,3 +62,4 @@ def grouper(iterable, n):
     # grouper('ABCDEFG', 3) --> ABC DEF"
     args = [iter(iterable)] * n
     return zip(*args)
+

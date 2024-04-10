@@ -32,7 +32,9 @@ class Caltech256:
         self.train_dataset, self.test_dataset = torch.utils.data.random_split(
             dataset, [train_size, test_size], generator=Generator().manual_seed(seed)
         )
-
+        
+        self.test_dataset.transform = preprocess
+       
         self.train_loader = torch.utils.data.DataLoader(
             self.train_dataset,
             shuffle=True,

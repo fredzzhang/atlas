@@ -11,6 +11,7 @@ https://github.com/gortizji/tangent_task_arithmetic
 
 import numpy as np
 import torch
+import torchvision
 import tqdm
 
 from src import utils
@@ -20,8 +21,40 @@ from src.heads import get_classification_head
 from src.linearize import LinearizedImageEncoder
 from src.modeling import ImageClassifier
 
+def get_val_features(image_encoder, dataset_name, dataset, args):
+    # Build the classification head with all classes, when the dataset only has one.
+    if '_' in dataset_name:
+        dataset_name_ = dataset_name.split('_')[-1]
+    else:
+        dataset_name_ = dataset_name
+    classification_head = get_classification_head(args, dataset_name_)
+    model = ImageClassifier(image_encoder, classification_head)
 
-def eval_single_dataset(image_encoder, dataset_name, args):
+    model.eval()
+    
+    dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
+    dataloader.shuffle=False
+    device = args.device
+
+    feats = []
+    labels = []
+    logits_ = []
+    with torch.no_grad():
+        top1, correct, n = 0.0, 0.0, 0.0
+        for _, data in enumerate(tqdm.tqdm(dataloader)):
+            data = maybe_dictionarize(data)
+            x = data["images"].to(device)
+            y = data["labels"].to(device)
+
+            logits, f = utils.get_logits(x, model, return_features=True)
+            
+            feats.append(f)
+            labels.append(y)
+            logits_.append(logits)
+
+    return torch.cat(feats, dim=0), torch.cat(logits_, dim=0), torch.cat(labels, dim=0)
+
+def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None, alpha_vec=None, beta_alpha=None, labels_cache=None, test=False):
     # Build the classification head with all classes, when the dataset only has one.
     if '_' in dataset_name:
         dataset_name_ = dataset_name.split('_')[-1]
@@ -32,18 +65,24 @@ def eval_single_dataset(image_encoder, dataset_name, args):
 
     model.eval()
 
-    dataset = get_dataset(
-        dataset_name,
-        model.val_preprocess,
-        location=args.data_location,
-        batch_size=args.batch_size,
-    )
+    if test:
+        print("Loading test set")
+        dataset = get_dataset(
+            dataset_name,
+            model.val_preprocess,
+            location=args.data_location,
+            batch_size=args.batch_size,
+        )
+        
     dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
+    
     dataloader.shuffle=False
     device = args.device
 
     confs = torch.tensor([])
     preds = torch.tensor([])
+    softmaxs = torch.tensor([])
+    targets = torch.tensor([])
 
     with torch.no_grad():
         top1, correct, n = 0.0, 0.0, 0.0
@@ -52,10 +91,27 @@ def eval_single_dataset(image_encoder, dataset_name, args):
             x = data["images"].to(device)
             y = data["labels"].to(device)
 
-            logits = utils.get_logits(x, model)
+            logits, feats = utils.get_logits(x, model, return_features=True)
+            feats /= feats.norm(dim=-1, keepdim=True)
+            
+            if alpha_vec:
+                #LP evaluation
+                vision_logits = adapter(feats)
+                text_logits = logits / 100.
+                logits = vision_logits + torch.ones(feats.shape[0], 1).to(feats) @ alpha_vec.to(feats) * text_logits
+            elif adapter:
+                #TIP evaluation
+                affinity = adapter(feats)
+            
+                cache_logits = ((-1) * (beta_alpha[0] - beta_alpha[0] * affinity)).exp() @ labels_cache.to(affinity)
+                tv_logits = logits            
+                logits = tv_logits + cache_logits * beta_alpha[1]
 
+            softmaxs = torch.cat((softmaxs, logits.softmax(1).cpu()), dim=0)
+            
             conf, _ = logits.softmax(1).max(1)            
             confs = torch.cat((confs, conf.cpu()), dim=0)
+            targets = torch.cat((targets, y.cpu()), dim=0)
 
             pred = logits.argmax(dim=1, keepdim=True).to(device)
             preds = torch.cat((preds, pred.cpu()), dim=0)
@@ -66,7 +122,7 @@ def eval_single_dataset(image_encoder, dataset_name, args):
 
         top1 = correct / n
 
-    metrics = {"top1": top1, "conf":confs, "preds":preds}
+    metrics = {"top1": top1, "conf":confs, "preds":preds, "softmax":softmaxs, "targets":targets.long()}
     print(f"Done evaluating on {dataset_name}. Accuracy: {100*top1:.2f}%")
 
     return metrics
@@ -89,6 +145,8 @@ def eval_single_train_dataset(image_encoder, dataset_name, dataloader, args):
     preds = torch.zeros(len(dataloader.dataset)).long()
     targets = torch.zeros(len(dataloader.dataset)).long()
     full_preds = torch.zeros((len(dataloader.dataset), classification_head.out_features))
+
+    preprocess = dataloader.dataset.update_transforms(image_encoder.val_preprocess)
 
     with torch.no_grad():
         top1, correct, n = 0.0, 0.0, 0.0
@@ -114,8 +172,9 @@ def eval_single_train_dataset(image_encoder, dataset_name, dataloader, args):
             top1 = correct / n
 
     metrics = {"top1": top1, "conf":confs, "preds":preds, "targets":targets, "full_preds":full_preds}
-    #print(f"Done evaluating on {dataset_name}. Accuracy: {100*top1:.2f}%")
 
+    dataloader.dataset.update_transforms(preprocess)
+    
     return metrics
 
 

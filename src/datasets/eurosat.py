@@ -72,4 +72,4 @@ class EuroSATVal(EuroSATBase):
                  location='~/datasets',
                  batch_size=32,
                  num_workers=16):
-        super().__init__(preprocess, 'val', location, batch_size, num_workers)
+        super().__init__(preprocess,  'val', location, batch_size, num_workers)

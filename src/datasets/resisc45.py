@@ -11,6 +11,7 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from torchvision.datasets import ImageFolder
 from torchvision.datasets.folder import default_loader as pil_loader
+from PIL import Image
 
 
 # modified from: https://github.com/microsoft/torchgeo
@@ -95,7 +96,6 @@ class VisionClassificationDataset(VisionDataset, ImageFolder):
 
         if self.transforms is not None:
             return self.transforms(image), label
-
         return image, label
 
     def __len__(self) -> int:

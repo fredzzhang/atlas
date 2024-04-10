@@ -4,6 +4,8 @@ import pickle
 import numpy as np
 import torch
 import math
+import torch.nn as nn
+import torch.nn.functional as F
 
 
 def assign_learning_rate(param_group, new_lr):
@@ -60,11 +62,11 @@ def torch_load(save_path, device=None):
     return model
 
 
-def get_logits(inputs, classifier):
+def get_logits(inputs, classifier, **kwargs):
     assert callable(classifier)
     if hasattr(classifier, "to"):
         classifier = classifier.to(inputs.device)
-    return classifier(inputs)
+    return classifier(inputs, **kwargs)
 
 
 def get_probs(inputs, classifier):
@@ -146,9 +148,20 @@ def cosine_annealing_lr(init_lr, stage1, epochs):
         lrs[t] = 0.5 * init_lr_stage_ldl * (1 + math.cos((t - stage1 + 1) * math.pi / (epochs - stage1 + 1)))
     return lrs
 
-def adjust_lr(optimizer, lr):
+def adjust_lr(optimizer, lr, param_groups=None):
     for i, param_group in enumerate(optimizer.param_groups):
         param_group['lr'] = lr
+        if param_groups is not None:
+            param_group['lr'] *= param_groups[i]
+            
+def adjust_lr_lp(optimizer, lr, lr_lp, param_groups=None):
+    for i, param_group in enumerate(optimizer.param_groups):
+        if i == 1:
+            param_group['lr'] = lr_lp
+        else:
+            param_group['lr'] = lr
+        
+
         
 class TwoTransform:
     """Create two transforms of the same image"""
@@ -168,3 +181,43 @@ class TwoAsymetricTransform:
 
     def __call__(self, x):
         return [self.transform(x), self.transform2(x)]
+    
+class MetaAdapter(nn.Module):
+    def __init__(self, dim=1024, num_heads=1):
+        super().__init__()
+        self.dim = dim
+        self.num_heads = num_heads
+        self.q_proj = nn.Linear(dim, dim, bias=False)
+        self.k_proj = nn.Linear(dim, dim, bias=False)
+        self.alpha_proj = nn.Linear(dim, 1, bias=True)
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        nn.init.xavier_uniform_(self.q_proj.weight)
+        nn.init.xavier_uniform_(self.k_proj.weight)
+        nn.init.xavier_uniform_(self.alpha_proj.weight)
+        nn.init.constant_(self.alpha_proj.bias, 1)
+
+    def forward(self, query, key, value):
+        B, K, C = key.shape
+        res = query
+
+        query = query.reshape(B, 1, C)
+        key = torch.cat([query, key], dim=1)
+        value = torch.cat([query, value], dim=1)
+        query = self.q_proj(query).reshape(B, self.num_heads, C)
+        key = self.k_proj(key)
+
+        query = query.reshape(B, self.num_heads, 1, -1).permute(0, 2, 1, 3)
+        key = key.reshape(B, K + 1, 1, -1).permute(0, 2, 1, 3)
+        value = value.reshape(B, K + 1, 1, -1).permute(0, 2, 1, 3)
+
+        attn_weight = (query @ key.transpose(-1, -2) / torch.sqrt(torch.tensor(self.dim, dtype=torch.float))).softmax(-1)
+        attn = attn_weight @ value
+
+        alpha = torch.nn.functional.sigmoid(self.alpha_proj(res).reshape(B, -1, 1, 1))
+        attn = (alpha * attn).squeeze()
+
+        attn = res + attn
+        attn = F.normalize(attn, p=2, dim=-1)
+        return attn

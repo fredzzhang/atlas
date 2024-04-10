@@ -4,6 +4,8 @@ import torch
 
 from src.linearize import LinearizedImageEncoder
 
+import matplotlib.pyplot as plt
+
 
 class _TaskVector(abc.ABC):
     def __init__(
@@ -30,18 +32,27 @@ class _TaskVector(abc.ABC):
                 vector[key] = vector[key] * (ma - mi) + mi
                 self.vector[key] = (
                     vector[key] - pretrained_state_dict[key]
-                )
-            
+                )            
                         
         elif finetuned_checkpoint is None: #Random tv
             with torch.no_grad():
+                import open_clip
+                #model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-32')
+                #finetuned_state_dict = model.state_dict()
                 pretrained_state_dict = self._load_checkpoint(
                     pretrained_checkpoint
                 ).state_dict()
+                #print(finetuned_state_dict.keys(), pretrained_state_dict.keys())
+                
                 finetuned_state_dict = {}
                 for k in pretrained_state_dict.keys():
                     mi, ma = pretrained_state_dict[k].min(), pretrained_state_dict[k].max()
-                    finetuned_state_dict[k] = torch.rand(pretrained_state_dict[k].shape) #* (ma - mi) + mi
+                    r = torch.rand(pretrained_state_dict[k].shape)#torch.rand(pretrained_state_dict[k].shape)*2 - 1 #* torch.rand(1) * 10
+                    #r = torch.randn(pretrained_state_dict[k].shape)
+                    #r[r<-0.1] = 0
+                    #r[r>0.1] = 0
+                    finetuned_state_dict[k] = r #* (ma - mi) + mi
+                    #finetuned_state_dict[k] *= torch.sqrt((pretrained_state_dict[k]*pretrained_state_dict[k]).sum()) / torch.sqrt((finetuned_state_dict[k]*finetuned_state_dict[k]).sum()) / 20
                     
                 self.vector = {}
                 for key in pretrained_state_dict:
@@ -50,7 +61,7 @@ class _TaskVector(abc.ABC):
                     if pretrained_state_dict[key].dtype == torch.uint8:
                         continue
                     self.vector[key] = (
-                        finetuned_state_dict[key]# - pretrained_state_dict[key]
+                        finetuned_state_dict[key] # - pretrained_state_dict[key]
                     )
             
         else:
@@ -64,6 +75,7 @@ class _TaskVector(abc.ABC):
                 finetuned_state_dict = self._load_checkpoint(
                     finetuned_checkpoint
                 ).state_dict()
+
                 self.vector = {}
                 for key in pretrained_state_dict:
                     if pretrained_state_dict[key].dtype == torch.int64:
@@ -73,18 +85,20 @@ class _TaskVector(abc.ABC):
                     self.vector[key] = (
                         finetuned_state_dict[key] - pretrained_state_dict[key]
                     )
-                    
         if scale:
+            for key in pretrained_state_dict:
+                self.vector[key] = self.vector[key] / self.norm()
+
+        if scale and False:
             with torch.no_grad():
                 norm1, norm2 = 0, 0
                 for key in pretrained_state_dict:                    
-                    self.vector[key] *= torch.sqrt((pretrained_state_dict[key] * pretrained_state_dict[key]).sum()) / torch.sqrt((self.vector[key]*self.vector[key]).sum())
+                    self.vector[key] *= torch.sqrt((pretrained_state_dict[key] * pretrained_state_dict[key]).sum()) / torch.sqrt((self.vector[key]*self.vector[key]).sum()) #/ 20
                     #norm1 += torch.sqrt((pretrained_state_dict[key] * pretrained_state_dict[key]).sum())
                     #norm2 += torch.sqrt((self.vector[key]*self.vector[key]).sum())
                 #for key in pretrained_state_dict:
                 #    self.vector[key] = self.vector[key] * norm1 / norm2 
-
-                    
+                
             
             
 

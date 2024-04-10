@@ -33,7 +33,7 @@ class FGVCAircraftBase:
             num_workers=num_workers,
         )
 
-        self.test_dataset = PyTorchFGVCAircraft(location, test_split, transform=preprocess, download=True)
+        self.test_dataset = PyTorchFGVCAircraft(location, test_split, transform=preprocess_val, download=True)
         self.test_loader = torch.utils.data.DataLoader(
             self.test_dataset,
             batch_size=batch_size,
@@ -47,7 +47,7 @@ class FGVCAircraft(FGVCAircraftBase):
                  location=os.path.expanduser('~/data'),
                  batch_size=32,
                  num_workers=16):
-        super().__init__(preprocess, "test", location, batch_size, num_workers)
+        super().__init__(preprocess, preprocess_val, "test", location, batch_size, num_workers)
 
 class FGVCAircraftVal(FGVCAircraftBase):
     def __init__(self,

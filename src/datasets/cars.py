@@ -49,7 +49,7 @@ class PytorchStanfordCars(VisionDataset):
             raise RuntimeError("Scipy is not found. This dataset needs to have scipy installed: pip install scipy")
 
         super().__init__(root, transform=transform, target_transform=target_transform)
-
+        
         self._split = verify_str_arg(split, "split", ("train", "test"))
         self._base_folder = pathlib.Path(root) / "stanford_cars"
         devkit = self._base_folder / "devkit"

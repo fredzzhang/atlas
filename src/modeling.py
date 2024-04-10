@@ -75,6 +75,7 @@ class ClassificationHead(torch.nn.Linear):
     def forward(self, inputs):
         if self.normalize:
             inputs = inputs / inputs.norm(dim=-1, keepdim=True)
+        self.to(inputs.device)
         return super().forward(inputs)
 
     def __call__(self, inputs):
@@ -103,8 +104,8 @@ class ImageClassifier(torch.nn.Module):
         self.classification_head.weight.requires_grad_(False)
         self.classification_head.bias.requires_grad_(False)
 
-    def forward(self, inputs, return_features=False):
-        features = self.image_encoder(inputs)
+    def forward(self, inputs, return_features=False, **kwargs):
+        features = self.image_encoder(inputs, **kwargs)
         outputs = self.classification_head(features)
         if return_features:
             return outputs, features
