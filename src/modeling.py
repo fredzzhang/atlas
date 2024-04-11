@@ -25,6 +25,8 @@ class ImageEncoder(torch.nn.Module):
             name, pretrained=pretrained, cache_dir=args.openclip_cachedir
         )
 
+        
+
         self.cache_dir = args.cache_dir
 
         if not keep_lang and hasattr(self.model, "transformer"):

@@ -31,6 +31,7 @@ def get_val_features(image_encoder, dataset_name, dataset, args):
     model = ImageClassifier(image_encoder, classification_head)
 
     model.eval()
+    model.to(args.device)
     
     dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
     dataloader.shuffle=False
@@ -60,10 +61,12 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
         dataset_name_ = dataset_name.split('_')[-1]
     else:
         dataset_name_ = dataset_name
+        
     classification_head = get_classification_head(args, dataset_name_)
     model = ImageClassifier(image_encoder, classification_head)
 
     model.eval()
+    model.to(args.device)
 
     if test:
         print("Loading test set")
@@ -84,6 +87,10 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
     softmaxs = torch.tensor([])
     targets = torch.tensor([])
 
+    if args.lora:
+        import minlora
+        minlora.merge_lora(model)
+
     with torch.no_grad():
         top1, correct, n = 0.0, 0.0, 0.0
         for _, data in enumerate(tqdm.tqdm(dataloader)):
@@ -96,17 +103,18 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
             
             if alpha_vec:
                 #LP evaluation
+                adapter = adapter.to(feats.device)
                 vision_logits = adapter(feats)
                 text_logits = logits / 100.
                 logits = vision_logits + torch.ones(feats.shape[0], 1).to(feats) @ alpha_vec.to(feats) * text_logits
             elif adapter:
                 #TIP evaluation
+                adapter = adapter.to(feats.device)
                 affinity = adapter(feats)
             
                 cache_logits = ((-1) * (beta_alpha[0] - beta_alpha[0] * affinity)).exp() @ labels_cache.to(affinity)
                 tv_logits = logits            
                 logits = tv_logits + cache_logits * beta_alpha[1]
-
             softmaxs = torch.cat((softmaxs, logits.softmax(1).cpu()), dim=0)
             
             conf, _ = logits.softmax(1).max(1)            
@@ -125,6 +133,9 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
     metrics = {"top1": top1, "conf":confs, "preds":preds, "softmax":softmaxs, "targets":targets.long()}
     print(f"Done evaluating on {dataset_name}. Accuracy: {100*top1:.2f}%")
 
+    if args.lora:
+        minlora.remove_lora(model)
+
     return metrics
 
 def eval_single_train_dataset(image_encoder, dataset_name, dataloader, args):
@@ -136,7 +147,8 @@ def eval_single_train_dataset(image_encoder, dataset_name, dataloader, args):
         
     classification_head = get_classification_head(args, dataset_name_)
     model = ImageClassifier(image_encoder, classification_head)
-
+    
+    model.to(args.device)
     model.eval()
 
     device = args.device

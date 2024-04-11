@@ -49,7 +49,6 @@ def parse_arguments():
         help="Loss function to use.",
         choices=["", "annealing"]
     )
-
     parser.add_argument(
         "--train-dataset",
         default=None,
@@ -212,6 +211,42 @@ def parse_arguments():
         help="TIP adaptors ours with learned alpha/beta, must be used together with --tip-ft"
     )
     parser.add_argument(
+        "--no-log",
+        default=False,
+        action='store_true',
+        help="No logging in the results/ folder"
+    )
+    parser.add_argument(
+        "--select-tvs",
+        default=None,
+        type=int,
+        help="Select the best n Tvs from the pool"
+    )
+    parser.add_argument(
+        "--worse",
+        default=False,
+        action="store_true",
+        help="Select the worse n Tvs from the pool. Needs to be coupled with --select-tvs"
+    )
+    parser.add_argument(
+        "--random",
+        default=False,
+        action="store_true",
+        help="Select random n Tvs from the pool. Needs to be coupled with --select-tvs"
+    )
+    parser.add_argument(
+        "--mem-eff",
+        default=False,
+        action="store_true",
+        help="Select random n Tvs from the pool in a memory efficient way. Needs to be coupled with --select-tvs"
+    )
+    parser.add_argument(
+        "--tv-cpu",
+        default=False,
+        action='store_true',
+        help="Host tvs to cpu (slower but much less VRAM)"
+    )
+    parser.add_argument(
         "--add-random-tv",
         type=int,
         default=None,
@@ -228,6 +263,12 @@ def parse_arguments():
         type=str,
         default=None,
         help="Path to optiized random task vectors.",
+    )
+    parser.add_argument(
+        "--lora",
+        default=False,
+        action="store_true",
+        help="Use LoRA task vectors."
     )
     parsed_args = parser.parse_args()
     parsed_args.device = "cuda" if torch.cuda.is_available() else "cpu"

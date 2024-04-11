@@ -82,9 +82,7 @@ class _TaskVector(abc.ABC):
                         continue
                     if pretrained_state_dict[key].dtype == torch.uint8:
                         continue
-                    self.vector[key] = (
-                        finetuned_state_dict[key] - pretrained_state_dict[key]
-                    )
+                    self.vector[key] = (finetuned_state_dict[key] - pretrained_state_dict[key]).half()
         if scale:
             for key in pretrained_state_dict:
                 self.vector[key] = self.vector[key] / self.norm()
@@ -99,7 +97,6 @@ class _TaskVector(abc.ABC):
                 #for key in pretrained_state_dict:
                 #    self.vector[key] = self.vector[key] * norm1 / norm2 
                 
-            
             
 
     @abc.abstractmethod

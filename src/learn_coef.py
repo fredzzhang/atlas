@@ -129,7 +129,7 @@ class LinearizedModel_(nn.Module):
 
         dparams = []
         for tv in task_vectors:
-            dp = [tv.vector[k].to(device) for k in tv.vector if k.startswith('model.params.')]
+            dp = [tv.vector[k] for k in tv.vector if k.startswith('model.params.')]
             dparams.append(dp)
 
         self.dparams = dparams
@@ -157,7 +157,7 @@ class ImageEncoder_(nn.Module):
         self.params = torch.nn.ParameterList(params)
         for p in self.params:
             p.requires_grad = False
-
+        
         self.attn = attn
         self.attn_l = []
         n = 0
@@ -165,62 +165,93 @@ class ImageEncoder_(nn.Module):
             if 'attn.in_proj' in name:
                 self.attn_l.append(i)
                 n+=1
-            
+                
         self.device = device
         # Copy the attributes from the image encoder.
         self.train_preprocess = model.train_preprocess
         self.val_preprocess = model.val_preprocess
         self.cache_dir = model.cache_dir
 
-        dparams = []
+        self.tv_cpu = args.tv_cpu
+        self.update_tvs(task_vectors)
+        self.tv_cpu = args.tv_cpu
+        
+    def update_tvs(self, task_vectors):
+        dparams = []        
         for tv in task_vectors:
-            dp = [tv.vector[k].to(device) for k in tv.vector]
+            dp = [tv.vector[k] for k in tv.vector]
             dparams.append(dp)
-        self.layerwise = layerwise
         self.dparams = dparams
 
-
+        device = self.params[0].device
+        
+        if hasattr(self, "coef"):
+            del self.coef
+        if hasattr(self, "coef1"):
+            del self.coef1
+        
+        self.coef1 = []
         if self.attn:
-            self.coef1 = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params)))
-            self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params), 3))
+            self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params)))
+            self.coef1 = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params), 3))
         elif self.layerwise:
             self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params)))
         else:
-            self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors),))
+            self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors)))
+        #Move the parameters back to where they belong
+        self.to(device)
 
+    def _apply(self, fn, *args, **kwargs):
+        """Override method to relocate buffer list
+
+        NOTE: This function signature is for PyTorch 1.13.1.
+        Newer verions have added another optional argument `recurse=True`.
+        """
+        new_self = super()._apply(fn=fn, *args, **kwargs)
+        new_self.buffer = (fn(x) for x in new_self.buffer)
+        if not self.tv_cpu:
+            new_self.dparams = [[fn(dp) for dp in dparam] for dparam in new_self.dparams]
+        return new_self
+        
     def __call__(self, x, zero_shot=False) -> torch.Tensor:
         if zero_shot:
             return self.func(self.params, x)
-        if self.attn:
-            dparams = [sum([p * c[i] for p, c in zip(dp, self.coef1)]) if i not in self.attn_l else sum([torch.cat((p[:len(p)//3] * c[i, 0], p[len(p)//3:2*len(p)//3] * c[i, 1], p[2*len(p)//3:len(p)] * c[i, 2]))  for p, c in zip(dp, self.coef)]) for i, dp in enumerate(zip(*self.dparams))]
-        elif self.layerwise:
-            dparams = [sum([p * c[i] for p, c in zip(dp, self.coef)]) for i, dp in enumerate(zip(*self.dparams))]
-        else:
-            dparams = [sum([p * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
-
-        new_params = [(dp + p).to(x.device) for i, (dp, p) in enumerate(zip(dparams, self.params))]
         
+        if self.attn:
+            dparams = [sum([p.to(c.device, non_blocking=True) * c[i] for p, c in zip(dp, self.coef)]) if i not in self.attn_l else sum([torch.cat((p[:len(p)//3].to(c.device, non_blocking=True) * c[i, 0], p[len(p)//3:2*len(p)//3].to(c.device, non_blocking=True) * c[i, 1], p[2*len(p)//3:len(p)].to(c.device, non_blocking=True) * c[i, 2]))  for p, c in zip(dp, self.coef1)]) for i, dp in enumerate(zip(*self.dparams))]
+        elif self.layerwise:            
+            dparams = [sum([p.to(c.device, non_blocking=True) * c[i] for p, c in zip(dp, self.coef)]) for i, dp in enumerate(zip(*self.dparams))]
+        else:
+            dparams = [sum([p.to(c.device, non_blocking=True) * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
+        
+        new_params = [dp + p for i, (dp, p) in enumerate(zip(dparams, self.params))]
         return self.func(new_params, x)
 
 class IndexWrapper(nn.Module):
     def __init__(self, dataset):
         super().__init__()
         self.dataset = dataset
-        if isinstance(self.dataset, torch.utils.data.dataset.Subset):
-            self.dataset = self.dataset.dataset
         
     def __getitem__(self, index):
         return self.dataset[index], index
 
     def update_transforms(self, new_transform):
-        if hasattr(self.dataset, "transform"):
-            preprocess = self.dataset.transform
-            self.dataset.transform = new_transform
-        elif hasattr(self.dataset, "transforms"):
-            preprocess = self.dataset.transforms
-            self.dataset.transforms = new_transform
+        dataset = self.dataset
+        while isinstance(dataset, torch.utils.data.dataset.Subset):
+            dataset = dataset.dataset
+        if hasattr(dataset, "transforms"): #Resisc, oxford pets
+            if isinstance(dataset.transforms, torchvision.datasets.vision.StandardTransform):#oxford pets
+                new_transform = torchvision.datasets.vision.StandardTransform(new_transform)
+            preprocess = dataset.transforms
+            dataset.transforms = new_transform
+        elif hasattr(dataset, "transform"):
+            if isinstance(dataset.transform, torchvision.datasets.vision.StandardTransform): #oxford pets
+                new_transform = torchvision.datasets.vision.StandardTransform(new_transform)
+            preprocess = dataset.transform
+            dataset.transform = new_transform
         else:
             raise AttributeError(f"Can't find transform attribute of dataset {self.dataset}")
+        
         return preprocess
     
     def __len__(self):
@@ -234,7 +265,7 @@ def main(rank, args):
         "MNIST", "RESISC45", "SUN397", "SVHN", "CIFAR10",
         "CIFAR100", "ImageNet", "STL10", "Food101", "Caltech256",
         "FGVCAircraft", "Flowers102", "OxfordIIITPet", "CUB200",
-        "PascalVOC", "Country211"
+        "PascalVOC", "Country211" 
     ]
     if args.add_random_tv is not None:
         pool = []
@@ -244,7 +275,7 @@ def main(rank, args):
     l = 0
     for i, dataset in enumerate(pool):
         if "randomtv" in dataset:
-            pretrained_checkpoint = f"{args.save}/{pool[0]}Val/zeroshot.pt"
+            pretrained_checkpoint = f"{args.save}/CarsVal/zeroshot.pt"
             task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, scale=args.scale)
         elif args.finetuning_mode == "linear":
             pretrained_checkpoint = f"{args.save}/{dataset}Val/linear_zeroshot.pt"
@@ -296,9 +327,10 @@ def main(rank, args):
             os.mkdir('/'.join(splt[:i+1]))
 
 
-    fname2 = f"results/results_{args.loss_fn}{'_layerwise' if args.layerwise else '_global'}{'_optitv' if args.optimally_random else ''}{'_attn' if args.attn else ''}{'_semi'+str(args.semi) if args.semi else ''}{'_tipft' if args.tip_ft else ''}{'_tiponly' if args.tip_only else ''}{'_tipcot' if args.tip_cot else ''}{'_lp' if args.lp else ''}_{datetime.today().strftime('%Y-%m-%d-%H:%M')}.txt"
-    with open(fname, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
-    with open(fname2, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
+    fname2 = f"results/results_{args.loss_fn}{'_layerwise' if args.layerwise else '_global'}{'_optitv' if args.optimally_random else ''}{'_attn' if args.attn else ''}{'_semi'+str(args.semi) if args.semi else ''}{'_tipft' if args.tip_ft else ''}{'_tiponly' if args.tip_only else ''}{'_tipcot' if args.tip_cot else ''}{'_lp' if args.lp else ''}{'_select'+str(args.select_tvs) if args.select_tvs else ''}{'_memeff' if args.mem_eff else ''}{'_random' if args.random else ''}{'_worse' if args.worse else ''}_{datetime.today().strftime('%Y-%m-%d-%H:%M')}.txt"
+    if not args.no_log:
+        with open(fname, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
+        with open(fname2, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
     coef_dict = {}
     
     for dataset in args.datasets:
@@ -311,20 +343,22 @@ def main(rank, args):
         base_acc, best_acc, best_epoch, best_coef, acc = train(task_vectors, args)
 
         coef_dict[dataset] = {'coefs': acc["coefs"], 'preds':acc["softmax"], 'targets':acc["targets"]}
-        torch.save(coef_dict, fname.replace('.txt', '.pth'))
-        torch.save(coef_dict, fname2.replace('.txt', '.pth'))
-        
-        with open(fname, 'a') as f: f.writelines([f"{dataset}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}", f"{best_coef}\n"])
-        with open(fname2, 'a') as f: f.writelines([f"{dataset}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}", f"{best_coef}\n"])
-    with open(fname, 'a') as f: f.writelines([f"\nArguments {args}"])
-    with open(fname2, 'a') as f: f.writelines([f"\nArguments {args}"])
+        if not args.no_log:
+            torch.save(coef_dict, fname.replace('.txt', '.pth'))
+            torch.save(coef_dict, fname2.replace('.txt', '.pth'))
+            with open(fname, 'a') as f: f.writelines([f"{dataset}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}", f"{best_coef}\n"])
+            with open(fname2, 'a') as f: f.writelines([f"{dataset}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}", f"{best_coef}\n"])
+            
+    if not args.no_log:
+        with open(fname, 'a') as f: f.writelines([f"\nArguments {args}"])
+        with open(fname2, 'a') as f: f.writelines([f"\nArguments {args}"])
     
     
 def train(task_vectors, args):
     scaler = torch.cuda.amp.GradScaler()
     #setup_ddp(args.rank, args.world_size, port=args.port)
     test_dataset = args.test_dataset + 'Val'
-
+    
     assert args.finetuning_mode in [
         "linear",
         "standard",
@@ -335,6 +369,7 @@ def train(task_vectors, args):
         print("Using linearized fine-tuning.")
 
     orig_dataset = test_dataset.split('Val')[0]
+    pool = [k for k, v in task_vectors.items() if orig_dataset != k]
     task_vectors = [v for k, v in task_vectors.items() if orig_dataset != k]
 
     if args.finetuning_mode == "linear":
@@ -346,7 +381,6 @@ def train(task_vectors, args):
     
     classification_head = get_classification_head(args, test_dataset)
     model = ImageClassifier(image_encoder, classification_head)
-
     model.freeze_head()
     
     if 'simclr' in args.loss_fn:
@@ -388,8 +422,7 @@ def train(task_vectors, args):
 
     # Override shuffle to True
     data_loader.shuffle = True
-    num_batches = len(data_loader)
-            
+    num_batches = len(data_loader)            
 
     #TO DO: implement lightning Fabric support for DDP and multi-gpu    
     loss_fn = {
@@ -404,7 +437,7 @@ def train(task_vectors, args):
         'simclr_mixup': simclr_mixup_loss,
     }[args.loss_fn]
 
-    params = [p for p in model.parameters() if p.requires_grad]
+    params = [p for p in model.parameters() if p.requires_grad]    
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
     #optimizer = torch.optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=1e-5)
 
@@ -421,11 +454,12 @@ def train(task_vectors, args):
     if args.finetuning_mode == "linear":
         coef = model.image_encoder.model.coef
     else:
-        coef = model.image_encoder.coef        
+        coef = model.image_encoder.coef
         if args.attn:
             coef1 = model.image_encoder.coef1
 
     model.eval()
+   
     best_acc = 0
     max_ep = args.epochs
     if args.tip_only:
@@ -439,18 +473,18 @@ def train(task_vectors, args):
     batch_time = 0
     epoch = 0
 
-    fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp")
+    fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="16-mixed")
     fabric.launch()
 
     model, optimizer = fabric.setup(model, optimizer)
     data_loader = fabric.setup_dataloaders(data_loader)
-    
+
     for epoch in range(max_ep):
         # Evaluate before each epoch
         if args.lr_scheduler=="annealing":
             adjust_lr(optimizer, lrs[epoch])
 
-        if is_main_process():
+        if True:#is_main_process():
             # We only need to evaluate the model on the first GPU.
             image_encoder = model.image_encoder
             if epoch == 0:
@@ -480,29 +514,39 @@ def train(task_vectors, args):
                 
             if ('trusted' in args.loss_fn and ((epoch >= 0 and 'entro' not in args.loss_fn) or epoch >= 1)) and not (args.semi and epoch >=1):
 
-                acc = eval_single_train_dataset(image_encoder, test_dataset, data_loader, args)
-                
-                confs = acc['conf']
-                preds = acc['preds']
-                targets = acc['targets']
-                full_preds = acc['full_preds']
-
                 if args.semi:
-                    r = torch.randperm(len(confs))
+                    preprocess = data_loader.dataset.update_transforms(image_encoder.val_preprocess)
+                    targets = - torch.ones(len(data_loader.dataset), dtype=torch.long)
+                    preds = - torch.ones(len(data_loader.dataset), dtype=torch.long)
+                    with torch.no_grad():
+                        for i, batch in enumerate(tqdm(data_loader)):
+                            batch = maybe_dictionarize(batch, index=True)
+                            targets[batch["index"]] = batch["labels"].to(targets.device)
+                            if i >= 1000:
+                                print("Too much data, breaking ...")
+                                break
+                            
                     k = args.semi                    
                     to_keep = torch.tensor([], dtype=torch.long)
-                    unlabeled = torch.tensor([], dtype=torch.long)
+                    unlabeled = torch.tensor([], dtype=torch.long)                    
                     for c in range(classification_head.out_features):
-                        cond = (targets == c) * (confs > 0)                      
+                        cond = (targets == c)
                         ids_c = torch.arange(len(targets))[cond]
                         a = torch.randperm(len(ids_c))
                         to_keep = torch.cat((to_keep, ids_c[a[-k:]]))
                         unlabeled = torch.cat((unlabeled, ids_c[a[:-k]]))
 
-                    unlabeled = torch.tensor([u for u in unlabeled if confs[u] > 0], dtype=torch.long)
-                    unlabeled = torch.unique(unlabeled)
+                    #unlabeled = torch.tensor([u for u in unlabeled if confs[u] > 0], dtype=torch.long)
+                    #unlabeled = torch.unique(unlabeled)
                     preds[to_keep] = targets[to_keep]
                 else:
+                    acc = eval_single_train_dataset(image_encoder, test_dataset, data_loader, args)
+                    
+                    confs = acc['conf']
+                    preds = acc['preds']
+                    targets = acc['targets']
+                    full_preds = acc['full_preds']
+                    
                     k = min(int((len(subset) / classification_head.out_features) / 10), 100)
                     #k = max(int((len(subset) / classification_head.out_features) / 10), 10)
                     #k = int((len(subset) / classification_head.out_features) / 10)
@@ -536,7 +580,6 @@ def train(task_vectors, args):
                 print((preds[to_keep] == targets[to_keep]).sum() / len(to_keep))
                 print((preds[unlabeled] == targets[unlabeled]).sum() / len(unlabeled))
                 
-                preds = F.one_hot(preds, num_classes=classification_head.out_features)                
                 if 'ssl' in args.loss_fn:
                     low_confs = torch.arange(len(data_loader.dataset))[unlabeled]
                     print(f"Got {len(to_keep)} trusted and {len(unlabeled)} untrusted samples")
@@ -561,6 +604,77 @@ def train(task_vectors, args):
                     data_time = 0
                     batch_time = 0
                     continue
+
+        if args.select_tvs and epoch == 0:
+            print("Selecting best Tvs based on gradients")
+            if args.mem_eff:
+                print("Memory efficient selection")
+                n_tvs = len(task_vectors)
+                j = 0
+                grad = torch.zeros(n_tvs)
+                while j*args.select_tvs < n_tvs:
+                    model = model.module #Fabric stuff
+                    model.image_encoder.update_tvs(task_vectors[j*args.select_tvs:(j+1)*args.select_tvs])
+                    
+                    if args.finetuning_mode == "linear":
+                        coef = model.image_encoder.model.coef
+                    else:
+                        coef = model.image_encoder.coef
+                        if args.attn:
+                            coef1 = model.image_encoder.coef1
+                            
+                    params = [p for p in model.parameters() if p.requires_grad]    
+                    optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
+                    model, optimizer = fabric.setup(model, optimizer)
+                    for i, batch in enumerate(data_loader):
+                        batch = maybe_dictionarize(batch, index=True)
+                        inputs = batch["images"]
+                        labels = batch["labels"]
+                        logits = model(inputs)
+                        
+                        loss = F.cross_entropy(logits, labels)
+                        loss.backward()
+                        
+                    print(f"Processed {(j+1)*args.select_tvs} out of {n_tvs} task vectors")
+                    grad[j*args.select_tvs:(j+1)*args.select_tvs] = torch.abs(coef.grad.cpu()).mean(1)
+                    j += 1
+                    optimizer.zero_grad()
+            else:
+                for i, batch in enumerate(data_loader):
+                    batch = maybe_dictionarize(batch, index=True)
+                    inputs = batch["images"]
+                    labels = batch["labels"]
+                    logits = model(inputs)
+                    
+                    loss = F.cross_entropy(logits, labels)
+                    loss.backward()
+                
+                grad = torch.abs(coef.grad.cpu()).mean(1)
+                optimizer.zero_grad()
+            #plt.bar(torch.arange(grad.shape[0]), torch.abs(grad).mean(1))
+            #print(grad)
+            print(f"Highest {args.select_tvs} grads for dataset {test_dataset}: {[pool[i] for i in torch.argsort(grad)[-args.select_tvs:]]}, lowest {[pool[i] for i in torch.argsort(grad[:args.select_tvs])]}")
+            #plt.show()
+
+            model = model.module #Fabric stuff
+            if args.worse:
+                model.image_encoder.update_tvs([task_vectors[i] for i in torch.argsort(grad)[:args.select_tvs]])
+            elif args.random:
+                model.image_encoder.update_tvs([task_vectors[i] for i in torch.randperm(len(task_vectors))[:args.select_tvs]])
+            else:
+                model.image_encoder.update_tvs([task_vectors[i] for i in torch.argsort(grad)[-args.select_tvs:]])
+                
+            if args.finetuning_mode == "linear":
+                coef = model.image_encoder.model.coef
+            else:
+                coef = model.image_encoder.coef
+                if args.attn:
+                    coef1 = model.image_encoder.coef1
+                    
+            params = [p for p in model.parameters() if p.requires_grad]    
+            optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
+            model, optimizer = fabric.setup(model, optimizer)
+
         
         for i, batch in enumerate(data_loader):
             start_time = time.time()
@@ -623,7 +737,7 @@ def train(task_vectors, args):
                     #loss = softmax_entropy(logits).mean()
 
             elif 'trusted' in args.loss_fn:
-                loss = loss_fn(logits, preds[ids].to(logits))
+                loss = loss_fn(logits, F.one_hot(preds.to(logits.device)[ids], num_classes=classification_head.out_features).float())
             elif 'ssl' in args.loss_fn:
                 lam = np.random.beta(1, 1)
                 lam = max(lam, 1-lam)
@@ -647,6 +761,7 @@ def train(task_vectors, args):
 
                     
             fabric.backward(loss)
+            #loss.backward()
 
             if (i + 1) % args.num_grad_accumulation == 0:
                 if not args.lr_scheduler=="annealing":
@@ -661,7 +776,7 @@ def train(task_vectors, args):
             if (
                 step % args.print_every == 0
                 and ((i + 1) % args.num_grad_accumulation == 0)
-                and is_main_process()
+                and True#is_main_process()
             ):
                 percent_complete = 100 * (i + 1) / len(data_loader)
                 print(
@@ -677,7 +792,7 @@ def train(task_vectors, args):
         flush=True,
     )
     
-    if is_main_process():
+    if True:# is_main_process():
         # We only need to evaluate the model on the first GPU.
         image_encoder = model.image_encoder
         #with torch.autocast(device_type="cuda"):
@@ -739,7 +854,7 @@ def train(task_vectors, args):
                 features_cache = features_cache.permute(1, 0)
                 adapter = nn.Linear(features_cache.shape[0], features_cache.shape[1], bias=False)
                 adapter.weight = nn.Parameter(features_cache.t())
-                adapter.register_parameter("beta_alpha", nn.Parameter(torch.tensor([1.,1.]))) #Only way to update the parameter on the GPU, otherwise update on the CPU. In any case fp16 is non trivial
+                adapter.register_parameter("beta_alpha", nn.Parameter(torch.tensor([1.,2.]))) #Only way to update the parameter on the GPU, otherwise update on the CPU. In any case fp16 is non trivial
                 #adapter.beta_alpha = torch.tensor([1.,2.])
             adapter = adapter.to(features_cache)                
 
@@ -756,7 +871,8 @@ def train(task_vectors, args):
                 optimizer = torch.optim.AdamW([{'params': params}, {'params': adapter.weight}, {'params': adapter.beta_alpha}], lr=0.001, eps=1e-4)#Optimize tip + coefs
             else:
                 optimizer = torch.optim.AdamW([{'params': adapter.weight}, {'params': adapter.beta_alpha}], lr=0.001, eps=1e-4)
-
+                #optimizer = torch.optim.AdamW([adapter.beta_alpha], lr=0.001, eps=1e-4)
+                
             adapter, optimizer = fabric.setup(adapter, optimizer)
             data_loader = fabric.setup_dataloaders(data_loader)
 
@@ -830,13 +946,13 @@ def train(task_vectors, args):
                         tbar.set_description(f"Learning adaptor, epoch {epoch}/{args.epochs}, lr {optimizer.param_groups[0]['lr']:.3f}, loss {loss.item():.3f}")
                     
                     fabric.backward(loss)
+                    #loss.backward()
                     optimizer.step()
                     optimizer.zero_grad()
                     
-                    if args.lp and (epoch + 1) % 10 == 0:
-                        alpha_vec.data -= lr_alpha * alpha_vec.grad.data
-
-
+                    if (epoch + 1) % 10 == 0:
+                        if args.lp:
+                            alpha_vec.data -= lr_alpha * alpha_vec.grad.data
 
                 if not args.tip_cot:
                     features = torch.cat(feats_, dim=0)
@@ -862,6 +978,7 @@ def train(task_vectors, args):
                         loss = F.cross_entropy(f_logits, labels)
                         
                         fabric.backward(loss)
+                        #loss.backward()
                         optimizer.step()
                         optimizer.zero_grad()
                         
@@ -943,7 +1060,6 @@ def train(task_vectors, args):
     else:
         beta_alpha = adapter.beta_alpha.detach().cpu()
     if (args.tip_ft or args.tip_cot) and not args.lp:
-        del adapter.beta_alpha
         del adapter
 
     acc['coefs'] = coefs
@@ -966,34 +1082,34 @@ if __name__ == "__main__":
 
     # Epochs w/ lr=1e-2 for entropy objective
     datasets = {
-        "Cars": 0,
-        "DTD": 0,
-        "EuroSAT": 0,
-        "GTSRB": 0,
-        "MNIST": 0,
-        "RESISC45": 0,
-        "SUN397": 0,
-        "SVHN": 0,
-        "CIFAR10": 0,
-        "CIFAR100": 0,        
-        "ImageNet": 0,
-        "STL0": 0,
-        "Food01": 0,
-        "Caltech256": 0,
-        "FGVCAircraft": 0,
-        "Flowers02": 0,
-        "OxfordIIITPet": 0,
-        "CUB200": 0,
-        "PascalVOC": 0,
-        "Country211": 0
+        "Cars": 10,
+        "DTD": 10,
+        "EuroSAT": 10,
+        "GTSRB": 10,
+        "MNIST": 10,
+        "RESISC45": 10,
+        "SUN397": 10,
+        "SVHN": 10,
+        "CIFAR10": 10,
+        "CIFAR100": 10,        
+        "ImageNet": 10,
+        "STL10": 10,
+        "Food101": 10,
+        "Caltech256": 10,
+        "FGVCAircraft": 10,
+        "Flowers102": 10,
+        "OxfordIIITPet": 10,
+        "CUB200": 10,
+        "PascalVOC": 10,
+        "Country211": 10,
     }
 
     args = parse_arguments()
     args.datasets = datasets
     # HACK: Some command line arguments are overwritten by defaults here.
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
-    args.batch_size = 64 if args.model == "ViT-L-14" else 128
-    args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
+    args.batch_size = 32 if args.model == "ViT-L-14" else 128
+    args.num_grad_accumulation = 4 if args.model == "ViT-L-14" else 1
     args.print_every = 10
 
     if args.seed is not None:

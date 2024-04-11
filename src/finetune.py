@@ -51,7 +51,7 @@ def finetune(rank, args):
         if linearized_finetuning
         else os.path.join(args.save, train_dataset, "zeroshot.pt")
     )
-    if os.path.exists(zs_path) and os.path.exists(ft_path):
+    if os.path.exists(zs_path) and os.path.exists(ft_path) and False:
         print(f"Skipping fine-tuning because {ft_path} exists.")
         return zs_path, ft_path
 
@@ -79,9 +79,7 @@ def finetune(rank, args):
     classification_head = get_classification_head(args, train_dataset_)
 
     model = ImageClassifier(image_encoder, classification_head)
-
     model.freeze_head()
-    model = model.cuda()
 
     preprocess_fn = model.train_preprocess
     print_every = 50
@@ -95,6 +93,13 @@ def finetune(rank, args):
     data_loader = get_dataloader(dataset, is_train=True, args=args, image_encoder=None)
     num_batches = len(dataset.train_loader)
 
+    if args.lora:
+        import minlora
+        minlora.add_lora(model.image_encoder)
+        params = list(minlora.get_lora_params(model.image_encoder))
+        print(f"Training {sum(p.numel() for p in params if p.requires_grad)} LoRA params ({sum(p.numel() for p in params if p.requires_grad)/sum(p.numel() for p in model.parameters() if p.requires_grad)*100.:.2f}%)")
+        
+    model = model.cuda()
     # Distribute the data and model across the GPUs.
     ddp_loader = distribute_loader(data_loader)
     ddp_model = torch.nn.parallel.DistributedDataParallel(
@@ -109,7 +114,9 @@ def finetune(rank, args):
     else:
         loss_fn = torch.nn.CrossEntropyLoss()
 
-    params = [p for p in ddp_model.parameters() if p.requires_grad]
+    if not args.lora:
+        params = [p for p in ddp_model.parameters() if p.requires_grad]
+
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
 
     scheduler = cosine_lr(
@@ -127,7 +134,8 @@ def finetune(rank, args):
             if linearized_finetuning
             else os.path.join(ckpdir, "zeroshot.pt")
         )
-        ddp_model.module.image_encoder.save(model_path)
+        if not args.lora:
+            ddp_model.module.image_encoder.save(model_path)        
         
     scaler = torch.cuda.amp.GradScaler()
     for epoch in range(args.epochs):        
@@ -191,20 +199,29 @@ def finetune(rank, args):
 
         # Test the model each epoch 
         image_encoder = ddp_model.module.image_encoder
-        eval_single_dataset(image_encoder, train_dataset, dataset, args)
+        if not args.lora:
+            #I have not found a way to move the lora params back into training mode
+            eval_single_dataset(image_encoder, train_dataset, dataset, args)
+            
 
+    eval_single_dataset(image_encoder, train_dataset, dataset, args, test=True)        
     if args.save is not None and is_main_process():
         zs_path = (
             os.path.join(ckpdir, "linear_zeroshot.pt")
             if linearized_finetuning
             else os.path.join(ckpdir, "zeroshot.pt")
         )
-        ft_path = (
-            os.path.join(ckpdir, "linear_finetuned.pt")
-            if linearized_finetuning
-            else os.path.join(ckpdir, "finetuned.pt")
-        )
-        image_encoder.save(ft_path)
+        if args.lora:
+            lora_state_dict = minlora.get_lora_state_dict(ddp_model.module)
+            torch.save(os.path.join(ckpdir, "lora.pt"))
+        else:
+            ft_path = (
+                os.path.join(ckpdir, "linear_finetuned.pt")
+                if linearized_finetuning
+                else os.path.join(ckpdir, "finetuned.pt")
+            )
+            image_encoder.save(ft_path)
+            
         return zs_path, ft_path
 
     cleanup_ddp()
@@ -214,7 +231,7 @@ if __name__ == "__main__":
     epochs = {
         "Cars": 35,
         "DTD": 76,
-        "EuroSAT": 12,
+        "EuroSAT": 13,
         "GTSRB": 11,
         "MNIST": 5,
         "RESISC45": 15,
