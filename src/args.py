@@ -140,12 +140,6 @@ def parse_arguments():
         help="Port for distributed training.",
     )
     parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="Random seed.",
-    )
-    parser.add_argument(
         "--finetuning-mode",
         choices=["standard", "linear", "posthoc", "none"],
         help="Whether to use linearized models or not.",
@@ -197,6 +191,12 @@ def parse_arguments():
         default=False,
         action='store_true',
         help="Finetune the task vector using TIP adaptors"
+    )
+    parser.add_argument(
+        "--ours",
+        default=False,
+        action="store_true",
+        help="TIP/LP++ with multiple forward passes."
     )
     parser.add_argument(
         "--tip-cot",

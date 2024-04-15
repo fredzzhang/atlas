@@ -301,7 +301,7 @@ def main(rank, args):
     args.rank = rank
     fname = f"results/{args.model}/"
     if args.fname is not None:
-        fname = os.path.join(args.fname, args.seed)
+        fname = os.path.join(args.fname, str(args.seed))
     elif args.datasets[list(args.datasets.keys())[0]] == 0:
         fname = os.path.join(fname, "zero-shot/")
     else:
@@ -356,6 +356,14 @@ def main(rank, args):
         base_acc, best_acc, best_epoch, best_coef, acc = train(task_vectors, args)
 
         coef_dict[dataset] = {'coefs': acc["coefs"], 'preds':acc["softmax"], 'targets':acc["targets"]}
+        print(acc.keys())
+        if args.tip_ft:
+            coef_dict[dataset]["adapter"] = acc["adapter"]
+            if args.lp:
+                coef_dict[dataset]["alpha_vec"] = acc["alpha_vec"]
+            else:
+                coef_dict[dataset]["beta_alpha"] = acc["beta_alpha"]
+                
         if not args.no_log:
             torch.save(coef_dict, fname.replace('.txt', '.pth'))
             torch.save(coef_dict, fname2.replace('.txt', '.pth'))
@@ -881,9 +889,10 @@ def train(task_vectors, args):
                 data_loader = torch.utils.data.DataLoader(index_dataset, sampler=sampler, num_workers=16, batch_size=args.batch_size)
                 
             if args.lp:
-                optimizer = torch.optim.SGD(adapter.parameters(), lr_temp, momentum=0.9)
                 if args.tip_cot:
                     optimizer = torch.optim.SGD([{'params': params} , {'params': adapter.parameters()}], lr_temp, momentum=0.9)
+                else:
+                    optimizer = torch.optim.SGD(adapter.parameters(), lr_temp, momentum=0.9)
             elif args.tip_cot:
                 optimizer = torch.optim.AdamW([{'params': params}, {'params': adapter.weight}, {'params': adapter.beta_alpha}], lr=0.001, eps=1e-4)#Optimize tip + coefs
             else:
@@ -908,7 +917,7 @@ def train(task_vectors, args):
                     coefs1 = coef1.data.detach().cpu()
 
             model.eval()
-            if not args.tip_cot:
+            if not args.tip_cot and not args.ours:
                 args.epochs = 1
             else:
                 args.epochs *= 2
@@ -969,10 +978,10 @@ def train(task_vectors, args):
                     optimizer.zero_grad()
                     
                     if (epoch + 1) % 10 == 0:
-                        if args.lp:
+                        if args.lp and False:
                             alpha_vec.data -= lr_alpha * alpha_vec.grad.data
 
-                if not args.tip_cot:
+                if not args.tip_cot and not args.ours:
                     features = torch.cat(feats_, dim=0)
                     logits = torch.cat(logits_, dim=0)
                     labels = torch.cat(labels_, dim=0)
@@ -1057,17 +1066,24 @@ def train(task_vectors, args):
     model.image_encoder.coef.data = coefs
     if args.attn:
         model.image_encoder.coef1.data = coefs1
-
+    
     if args.tip_ft:
         if args.lp:
             adapter = best_adapter
             alpha_vec = best_alpha
             acc = eval_single_dataset(image_encoder, test_dataset.split('Val')[0], dataset, args, adapter=adapter, alpha_vec=alpha_vec, test=True)
+            acc["alpha_vec"] = best_alpha
         else:
             adapter = best_adapter
             acc = eval_single_dataset(image_encoder, test_dataset.split('Val')[0], dataset, args, adapter=adapter, beta_alpha=adapter.beta_alpha, labels_cache=labels_cache, test=True)
+            acc["beta_alpha"] = adapter.beta_alpha
+        acc["adapter"] = best_adapter.state_dict()
     else:
         acc = eval_single_dataset(image_encoder, test_dataset.split('Val')[0], dataset, args, test=True)
+    
+    acc["coefs"] = coefs
+    if args.attn:
+        acc["coefs"] = (coefs, coefs1)
         
     best_acc = acc['top1']
     if args.epochs == 0:
@@ -1102,15 +1118,15 @@ if __name__ == "__main__":
 
     # Epochs w/ lr=1e-2 for entropy objective
     datasets = {
-        #"Cars": 10,
-        #"DTD": 10,
-        #"EuroSAT": 10,
-        #"GTSRB": 10,
-        #"MNIST": 10,
-        #"RESISC45": 10,
-        #"SUN397": 10,
-        #"SVHN": 10,
-        #"CIFAR10": 10,
+        "Cars": 10,
+        "DTD": 10,
+        "EuroSAT": 10,
+        "GTSRB": 10,
+        "MNIST": 10,
+        "RESISC45": 10,
+        "SUN397": 10,
+        "SVHN": 10,
+        "CIFAR10": 10,
         "CIFAR100": 10,        
         "ImageNet": 10,
         "STL10": 10,
@@ -1137,4 +1153,9 @@ if __name__ == "__main__":
     else:
         args.save = f"checkpoints/{args.model}"
     #torch.multiprocessing.spawn(main, args=(args,), nprocs=args.world_size)
+    seed = int(torch.exp(torch.tensor(args.seed)) * 3.1415 * 1000)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    
     main(0, args)
