@@ -46,14 +46,24 @@ def finetune(rank, args):
         if linearized_finetuning
         else os.path.join(args.save, train_dataset, "finetuned.pt")
     )
+    lora_path = (
+        os.path.join(args.save, train_dataset, "linear_lora.pt")
+        if linearized_finetuning
+        else os.path.join(args.save, train_dataset, "lora.pt")
+    )
     zs_path = (
         os.path.join(args.save, train_dataset, "linear_zeroshot.pt")
         if linearized_finetuning
         else os.path.join(args.save, train_dataset, "zeroshot.pt")
     )
-    if os.path.exists(zs_path) and os.path.exists(ft_path) and False:
+    
+    if os.path.exists(zs_path) and os.path.exists(ft_path) and not args.lora:
         print(f"Skipping fine-tuning because {ft_path} exists.")
         return zs_path, ft_path
+    
+    if os.path.exists(zs_path) and os.path.exists(lora_path) and args.lora:
+        print(f"Skipping fine-tuning because {lora_path} exists.")
+        return zs_path, lora_path
 
     assert train_dataset is not None, "Please provide a training dataset."
 
@@ -213,7 +223,7 @@ def finetune(rank, args):
         )
         if args.lora:
             lora_state_dict = minlora.get_lora_state_dict(ddp_model.module)
-            torch.save(os.path.join(ckpdir, "lora.pt"))
+            torch.save(lora_state_dict, os.path.join(ckpdir, "lora.pt"))
         else:
             ft_path = (
                 os.path.join(ckpdir, "linear_finetuned.pt")

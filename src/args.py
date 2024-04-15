@@ -247,10 +247,22 @@ def parse_arguments():
         help="Host tvs to cpu (slower but much less VRAM)"
     )
     parser.add_argument(
+        "--hugg",
+        default=False,
+        action='store_true',
+        help="Pull 19 weights from hugginface to be used as task vectors (implemented for VIT-B-32 only)"
+    )
+    parser.add_argument(
         "--add-random-tv",
         type=int,
         default=None,
         help="Add the specified amount random task vectors on top of the existing ones."
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=1,
+        help="Random seed."
     )
     parser.add_argument(
         "--semi",
@@ -263,6 +275,12 @@ def parse_arguments():
         type=str,
         default=None,
         help="Path to optiized random task vectors.",
+    )
+    parser.add_argument(
+        "--fname",
+        type=str,
+        default=None,
+        help="Save file name",
     )
     parser.add_argument(
         "--lora",

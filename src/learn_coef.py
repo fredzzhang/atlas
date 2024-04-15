@@ -263,18 +263,25 @@ def main(rank, args):
     pool = [
         "Cars", "DTD", "EuroSAT", "GTSRB",
         "MNIST", "RESISC45", "SUN397", "SVHN", "CIFAR10",
-        "CIFAR100", "ImageNet", "STL10", "Food101", "Caltech256",
+        "CIFAR100", "STL10", "Food101", "Caltech256",
         "FGVCAircraft", "Flowers102", "OxfordIIITPet", "CUB200",
-        "PascalVOC", "Country211" 
+        "PascalVOC", "Country211"  #"ImageNet", STL
     ]
+    VIT_B_32_hugg= ['laion400m_e31', 'laion400m_e32', 'laion2b_e16', 'laion2b_s34b_b79k', 'datacomp_xl_s13b_b90k', 'datacomp_m_s128m_b4k', 'commonpool_m_clip_s128m_b4k', 'commonpool_m_laion_s128m_b4k', 'commonpool_m_image_s128m_b4k', 'commonpool_m_text_s128m_b4k', 'commonpool_m_basic_s128m_b4k', 'commonpool_m_s128m_b4k', 'datacomp_s_s13m_b4k', 'commonpool_s_clip_s13m_b4k', 'commonpool_s_laion_s13m_b4k', 'commonpool_s_image_s13m_b4k', 'commonpool_s_text_s13m_b4k', 'commonpool_s_basic_s13m_b4k',  'commonpool_s_s13m_b4k'] #'openai' (zero-shot base)
+    
     if args.add_random_tv is not None:
         pool = []
         for i in range(args.add_random_tv):
             pool.append(f"randomtv_{i}")
+    if args.hugg:
+        pool = VIT_B_32_hugg
     task_vectors = {}
     l = 0
     for i, dataset in enumerate(pool):
-        if "randomtv" in dataset:
+        if args.hugg:
+            pretrained_checkpoint = f"{args.save}/CarsVal/zeroshot.pt"
+            task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, scale=args.scale, hugg_checkpoint=dataset)            
+        elif "randomtv" in dataset:
             pretrained_checkpoint = f"{args.save}/CarsVal/zeroshot.pt"
             task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, scale=args.scale)
         elif args.finetuning_mode == "linear":
@@ -293,7 +300,9 @@ def main(rank, args):
 
     args.rank = rank
     fname = f"results/{args.model}/"
-    if args.datasets[list(args.datasets.keys())[0]] == 0:
+    if args.fname is not None:
+        fname = os.path.join(args.fname, args.seed)
+    elif args.datasets[list(args.datasets.keys())[0]] == 0:
         fname = os.path.join(fname, "zero-shot/")
     else:
         if args.add_random_tv:
@@ -319,8 +328,12 @@ def main(rank, args):
                 fname = os.path.join(fname, "tv-lp" if args.lp else "tv-tip")
         else:
             fname = os.path.join(fname, "tv")
-                
-    fname = os.path.join(fname, f"{datetime.today().strftime('%Y-%m-%d-%H-%M')}.txt")
+
+    if args.fname is not None:
+        fname = os.path.join(fname, f"results.txt")
+    else:
+        fname = os.path.join(fname, f"{datetime.today().strftime('%Y-%m-%d-%H-%M')}.txt")
+        
     splt = fname.split('/')
     for i in range(len(splt)-1):
         if not os.path.exists('/'.join(splt[:i+1])):
@@ -653,7 +666,7 @@ def train(task_vectors, args):
                 optimizer.zero_grad()
             #plt.bar(torch.arange(grad.shape[0]), torch.abs(grad).mean(1))
             #print(grad)
-            print(f"Highest {args.select_tvs} grads for dataset {test_dataset}: {[pool[i] for i in torch.argsort(grad)[-args.select_tvs:]]}, lowest {[pool[i] for i in torch.argsort(grad[:args.select_tvs])]}")
+            print(f"Highest {args.select_tvs} grads for dataset {test_dataset}: {[pool[i] for i in torch.argsort(grad)[-args.select_tvs:]]}, lowest {[pool[i] for i in torch.argsort(grad)[:args.select_tvs]]}")
             #plt.show()
 
             model = model.module #Fabric stuff
@@ -849,14 +862,18 @@ def train(task_vectors, args):
 
             if args.lp:
                 from lpplusplus import init_lp
-                adapter, alpha_vec, lr_alpha, lr_temp = init_lp(features_cache, labels.long(), classification_head.weight.T / 100., args.semi)                
+                adapter, alpha_vec, lr_alpha, lr_temp = init_lp(features_cache, labels.long(), classification_head.weight.T / 100., args.semi)
             else:
                 features_cache = features_cache.permute(1, 0)
                 adapter = nn.Linear(features_cache.shape[0], features_cache.shape[1], bias=False)
                 adapter.weight = nn.Parameter(features_cache.t())
                 adapter.register_parameter("beta_alpha", nn.Parameter(torch.tensor([1.,2.]))) #Only way to update the parameter on the GPU, otherwise update on the CPU. In any case fp16 is non trivial
                 #adapter.beta_alpha = torch.tensor([1.,2.])
-            adapter = adapter.to(features_cache)                
+            adapter = adapter.to(features_cache)
+
+            best_adapter = copy.deepcopy(adapter).cpu() #Not sure if .clone() is necessary here
+            if args.lp:
+                best_alpha = alpha_vec.cpu().clone()
 
             if 'ssl' in args.loss_fn:
                 data_loader = torch.utils.data.DataLoader(index_dataset, batch_sampler=sampler, num_workers=16)
@@ -897,7 +914,7 @@ def train(task_vectors, args):
                 args.epochs *= 2
 
             if args.lp:
-                lrs = cosine_annealing_lr(0.1, 0, args.epochs)
+                lrs = cosine_annealing_lr(lr_temp, 0, args.epochs)
             else:
                 lrs = cosine_annealing_lr(0.001, 0, args.epochs)
             feats_, logits_, labels_ = [], [], []
@@ -912,8 +929,9 @@ def train(task_vectors, args):
                     else:
                         adjust_lr(optimizer, lrs[epoch], [1., 100.])
                 else:
-                    adjust_lr_lp(optimizer, lrs[epoch], lr_temp)
-
+                    if args.tip_cot:
+                        adjust_lr_lp(optimizer, lrs[epoch], 0.1)
+                        
                 tbar = tqdm(data_loader)
                 tbar.set_description(f"Learning adaptor, epoch {epoch}/{args.epochs}, lr {optimizer.param_groups[0]['lr']:.3f}")
                 for i, batch in enumerate(tbar):
@@ -981,37 +999,39 @@ def train(task_vectors, args):
                         #loss.backward()
                         optimizer.step()
                         optimizer.zero_grad()
-                        
+
                         if (e + 1) % 10 == 0:
-                            tbar.set_description(f"Tuning {'LP++' if args.lp else 'TIP'}, epoch {e}, best val acc {best_acc:.2f}, loss {loss.item():.2f}")
-                            if args.lp:
+                            tbar.set_description(f"Tuning {'LP++' if args.lp else 'TIP'}, epoch {e}, lr {optimizer.param_groups[0]['lr']:.3f}, best val acc {best_acc:.2f}, loss {loss.item():.2f}")
+                            if args.lp and False:
                                 alpha_vec.data -= lr_alpha * alpha_vec.grad.data
+                                alpha_vec.grad.data *= 0.
                                 
                         if args.tip_ft and not args.lp:
                             adjust_lr(optimizer, lrs[e], [1., 100.])
                             
                         adapter.eval()
-                        if e == 1:
-                            val_features, val_logits, val_labels = get_val_features(image_encoder, test_dataset, dataset, args)
-                            val_features /= val_features.norm(dim=-1, keepdim=True)
-                        if args.lp:
-                            vision_logits_val = adapter(val_features)
-                            text_logits_val = val_logits / 100.
-                            logits_val = vision_logits_val + torch.ones(val_features.shape[0], 1).to(val_features) @ alpha_vec.to(val_features) * text_logits_val
-                        elif args.tip_ft:
-                            with torch.no_grad():
+                        with torch.no_grad():
+                            if e == 1:
+                                val_features, val_logits, val_labels = get_val_features(image_encoder, test_dataset, dataset, args)
+                                val_features /= val_features.norm(dim=-1, keepdim=True)
+                                
+                            if args.lp:
+                                vision_logits_val = adapter(val_features)
+                                text_logits_val = val_logits / 100.
+                                logits_val = vision_logits_val + torch.ones(val_features.shape[0], 1).to(val_features) @ alpha_vec.to(val_features) * text_logits_val
+                            elif args.tip_ft:
                                 affinity = adapter(val_features)
                                 cache_logits = ((-1) * (adapter.beta_alpha[0] - adapter.beta_alpha[0] * affinity)).exp() @ labels_cache.to(affinity)  
                                 tv_logits = val_logits
                                 logits_val = cache_logits * adapter.beta_alpha[1] + tv_logits
                                 
-                        acc_val = np.mean(logits_val.argmax(dim=1).cpu().numpy() ==  val_labels.cpu().numpy())
-                        if acc_val > best_acc:
-                            best_acc = acc_val
-                            best_epoch = epoch
-                            best_adapter = copy.deepcopy(adapter).cpu() #Not sure if .clone() is necessary here
-                            if args.lp:
-                                best_alpha = alpha_vec.cpu().clone()
+                            acc_val = np.mean(logits_val.argmax(dim=1).cpu().numpy() ==  val_labels.cpu().numpy())
+                            if acc_val > best_acc:
+                                best_acc = acc_val
+                                best_epoch = epoch
+                                best_adapter = copy.deepcopy(adapter).cpu() #Not sure if .clone() is necessary here
+                                if args.lp:
+                                    best_alpha = alpha_vec.cpu().clone()
                 else:
                     adapter.eval()
                     
@@ -1082,15 +1102,15 @@ if __name__ == "__main__":
 
     # Epochs w/ lr=1e-2 for entropy objective
     datasets = {
-        "Cars": 10,
-        "DTD": 10,
-        "EuroSAT": 10,
-        "GTSRB": 10,
-        "MNIST": 10,
-        "RESISC45": 10,
-        "SUN397": 10,
-        "SVHN": 10,
-        "CIFAR10": 10,
+        #"Cars": 10,
+        #"DTD": 10,
+        #"EuroSAT": 10,
+        #"GTSRB": 10,
+        #"MNIST": 10,
+        #"RESISC45": 10,
+        #"SUN397": 10,
+        #"SVHN": 10,
+        #"CIFAR10": 10,
         "CIFAR100": 10,        
         "ImageNet": 10,
         "STL10": 10,
@@ -1112,7 +1132,7 @@ if __name__ == "__main__":
     args.num_grad_accumulation = 4 if args.model == "ViT-L-14" else 1
     args.print_every = 10
 
-    if args.seed is not None:
+    if args.seed is not None and False:
         args.save = f"checkpoints_{args.seed}/{args.model}"
     else:
         args.save = f"checkpoints/{args.model}"

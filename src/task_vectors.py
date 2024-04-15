@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 class _TaskVector(abc.ABC):
     def __init__(
-            self, pretrained_checkpoint=None, finetuned_checkpoint=None, vector=None, scale=False
+            self, pretrained_checkpoint=None, finetuned_checkpoint=None, hugg_checkpoint=None, vector=None, scale=False,
     ):
         """Initializes the task vector from a pretrained and a finetuned checkpoints.
 
@@ -17,10 +17,34 @@ class _TaskVector(abc.ABC):
         pretrained model, and another to the finetuned model), or by directly passying in
         the task vector state dict.
         """
-        if vector is not None:
+        if hugg_checkpoint is not None:
             pretrained_state_dict = self._load_checkpoint(
                 pretrained_checkpoint
             ).state_dict()
+
+            import open_clip
+            model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-32', pretrained=hugg_checkpoint)
+            finetuned_state_dict = model.state_dict()
+            self.vector = {}
+            for key in pretrained_state_dict:
+                if pretrained_state_dict[key].dtype == torch.int64:
+                    continue
+                if pretrained_state_dict[key].dtype == torch.uint8:
+                    continue
+                if key in [""]:#["model.positional_embedding", "model.text_projection", "model.logit_scale", "model.visual.class_embedding", "model.visual.positional_embedding"]:
+                    self.vector[key] = (
+                        pretrained_state_dict[key]
+                    )
+                else:
+                    self.vector[key] = (
+                        finetuned_state_dict[key.replace("model.","")] #- pretrained_state_dict[key]
+                    )
+            
+        elif vector is not None:
+            pretrained_state_dict = self._load_checkpoint(
+                pretrained_checkpoint
+            ).state_dict()
+
             self.vector = {}            
             for key in pretrained_state_dict:
                 if pretrained_state_dict[key].dtype == torch.int64:
@@ -194,6 +218,7 @@ class NonLinearTaskVector(_TaskVector):
     def _load_checkpoint(self, checkpoint):
         """Load a checkpoint into a model."""
         return torch.load(checkpoint, map_location="cpu")
+    
 
     def apply_to_nonlinear(self, pretrained_nonlinear_checkpoint, scaling_coef=1.0):
         """Apply a task vector to a nonlinear pretrained model."""

@@ -101,13 +101,13 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
             logits, feats = utils.get_logits(x, model, return_features=True)
             feats /= feats.norm(dim=-1, keepdim=True)
             
-            if alpha_vec:
+            if alpha_vec is not None:
                 #LP evaluation
                 adapter = adapter.to(feats.device)
                 vision_logits = adapter(feats)
                 text_logits = logits / 100.
                 logits = vision_logits + torch.ones(feats.shape[0], 1).to(feats) @ alpha_vec.to(feats) * text_logits
-            elif adapter:
+            elif adapter is not None:
                 #TIP evaluation
                 adapter = adapter.to(feats.device)
                 affinity = adapter(feats)
