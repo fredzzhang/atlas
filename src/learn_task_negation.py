@@ -60,15 +60,13 @@ def main(rank, args):
         task_vectors = [LinearizedTaskVector(zs_path, ft_path),]
         image_encoder = LinearizedImageEncoder(args, keep_lang=False)
         image_encoder.model = WeightedLinearizedModel(
-            image_encoder.model, task_vectors,
-            device=rank, blockwise=args.blockwise_coef
+            image_encoder.model, task_vectors, blockwise=args.blockwise_coef
         )
     else:
         task_vectors = [NonLinearTaskVector(zs_path, ft_path),]
         image_encoder = ImageEncoder(args)
         image_encoder = WeightedImageEncoder(
-            image_encoder, task_vectors,
-            device=rank, blockwise=args.blockwise_coef
+            image_encoder, task_vectors, blockwise=args.blockwise_coef
         )
 
     tgt_classification_head = get_classification_head(args, tgt_dataset)
@@ -87,7 +85,8 @@ def main(rank, args):
             location=args.data_location,
             batch_size=int(args.batch_size / 2),
             num_workers=2),
-        is_train=True, args=args, image_encoder=None
+        # Use the validation set to learn the coefficients.
+        is_train=False, args=args, image_encoder=None
     )
     ctr_dataloader = get_dataloader(
         get_dataset(
@@ -95,7 +94,8 @@ def main(rank, args):
             location=args.data_location,
             batch_size=int(args.batch_size / 2),
             num_workers=2),
-        is_train=True, args=args, image_encoder=None
+        # Use the validation set to learn the coefficients.
+        is_train=False, args=args, image_encoder=None
     )
     num_batches = len(tgt_dataloader)
     # Printing loss between four and ten times an epoch
@@ -119,7 +119,7 @@ def main(rank, args):
     loss_fn = torch.nn.CrossEntropyLoss()
 
     params = [p for p in ddp_model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
+    optimizer = torch.optim.AdamW(params, lr=args.lr * args.lr_multiplier, weight_decay=args.wd)
 
     if linearized_finetuning:
         head_path = os.path.join(ckpdir, "learned_linear_negations.pt")
@@ -171,7 +171,7 @@ def main(rank, args):
                 loss_tgt, loss_ctr = [loss_fn(x, y) for x, y in zip(logits, labels)]
                 """Gradient ascent on the target dataset,
                 gradient descent on the control dataset."""
-                loss = -loss_tgt + args.gamma * loss_ctr
+                loss = -loss_tgt + loss_ctr
 
             scaler.scale(loss).backward()
 
@@ -215,8 +215,13 @@ def main(rank, args):
                 f"{ctr_dataset}:normalised_top1": ctr_acc / args.zs_acc[ctr_dataset],
             })
 
+        if ctr_acc < ctr_zs_acc * args.control_threshold:
+            break
+
     # Log stats and test the model with the optimal coefficients.
     if is_main_process():
+        print("-" * 100)
+        print("=> Start evaluation on test set.")
         negation_acc[tgt_dataset]["val"] = val_acc
         image_encoder = ddp_model.module.image_encoder
         if linearized_finetuning:
@@ -229,6 +234,8 @@ def main(rank, args):
         negation_acc[tgt_dataset]["test_control"] = eval_single_dataset(
             image_encoder, ctr_dataset.split("Val")[0], args
         )["top1"]
+        # Remove the "Val" suffix in the dict
+        negation_acc = {k.replace("Val", ""): v for k, v in negation_acc.items()}
         with open(log_path, 'w') as f:
             json.dump(negation_acc, f, indent=4)
 
@@ -236,15 +243,18 @@ def main(rank, args):
 
 if __name__ == "__main__":
 
+    # {num_epochs, lr_multiplier}
+    # NOTE: These hyper-parameters are tuned on the validation sets with ViT-B-32
+    # and may need more tuning for other backbones.
     datasets = {
-        "Cars": 10,
-        "DTD": 10,
-        "EuroSAT": 10,
-        "GTSRB": 10,
-        "MNIST": 10,
-        "RESISC45": 10,
-        "SUN397": 10,
-        "SVHN": 10,
+        "Cars": [20, 5],
+        "DTD": [20, 10],
+        "EuroSAT": [3, 5],
+        "GTSRB": [10, 5],
+        "MNIST": [10, 3],
+        "RESISC45": [10, 2],
+        "SUN397": [10, 3],
+        "SVHN": [2, 5],
     }
 
     args = parse_arguments()
@@ -264,7 +274,7 @@ if __name__ == "__main__":
 
     for dataset in datasets:
         args.tgt_dataset = dataset + "Val"
-        args.epoch = datasets[dataset]
+        args.epoch, args.lr_multiplier = datasets[dataset]
         print("=" * 100)
         print(f"Learn task vector coefficients of {args.model} on {dataset}")
         print("=" * 100)

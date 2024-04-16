@@ -59,16 +59,14 @@ def main(rank, args):
             args.ft_acc = json.load(f)
         image_encoder = LinearizedImageEncoder(args, keep_lang=False)
         image_encoder.model = WeightedLinearizedModel(
-            image_encoder.model, task_vectors,
-            device=rank, blockwise=args.blockwise_coef
+            image_encoder.model, task_vectors, blockwise=args.blockwise_coef
         )
     else:
         with open(os.path.join(args.save, "ft_accuracies.json"), 'r') as f:
             args.ft_acc = json.load(f)
         image_encoder = ImageEncoder(args)
         image_encoder = WeightedImageEncoder(
-            image_encoder, task_vectors,
-            device=rank, blockwise=args.blockwise_coef
+            image_encoder, task_vectors, blockwise=args.blockwise_coef
         )
 
     preprocess_fn = image_encoder.train_preprocess
@@ -79,7 +77,8 @@ def main(rank, args):
             location=args.data_location,
             batch_size=int(args.batch_size / n_datasets),
             num_workers=2),
-        is_train=True, args=args, image_encoder=None
+        # Use the validation set to learn the coefficients.
+        is_train=False, args=args, image_encoder=None
     ) for dataset in datasets]
     num_batches = [len(dataloader) for dataloader in dataloaders]
     # Select the dataset with smallest size as the primary iterator.
@@ -234,7 +233,7 @@ def main(rank, args):
         else:
             image_encoder.coef = torch.nn.Parameter(best_coef)
 
-        test_acc = {dataset:
+        test_acc = {f"{dataset}:top1":
             eval_single_dataset(image_encoder, dataset, args)["top1"]
             for dataset in datasets
         }
@@ -267,7 +266,7 @@ if __name__ == "__main__":
     args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
     args.print_every = 10
     args.datasets = datasets
-    args.epoch = 10
+    args.epoch = 20
     if args.seed is not None:
         args.save = f"checkpoints_{args.seed}/{args.model}"
     else:
