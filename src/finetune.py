@@ -11,18 +11,19 @@ https://github.com/gortizji/tangent_task_arithmetic
 
 import os
 import time
-
 import torch
 
-from src.args import parse_arguments
-from src.datasets.common import get_dataloader, maybe_dictionarize
-from src.datasets.registry import get_dataset
-from src.distributed import cleanup_ddp, distribute_loader, is_main_process, setup_ddp
-from src.eval import eval_single_dataset
-from src.heads import get_classification_head
+from torch.cuda.amp import GradScaler
+from src.utils import LabelSmoothing, cosine_lr
 from src.linearize import LinearizedImageEncoder
 from src.modeling import ImageClassifier, ImageEncoder
-from src.utils import LabelSmoothing, cosine_lr
+
+from src.args import parse_arguments
+from src.eval import eval_single_dataset
+from src.heads import get_classification_head
+from src.datasets.registry import get_dataset
+from src.datasets.common import get_dataloader, maybe_dictionarize
+from src.distributed import cleanup_ddp, distribute_loader, is_main_process, setup_ddp
 
 
 def finetune(rank, args):
@@ -131,6 +132,7 @@ def finetune(rank, args):
         ddp_model.module.image_encoder.save(model_path)
 
 
+    scaler = GradScaler()
     # Test the model at the start
     image_encoder = ddp_model.module.image_encoder
     eval_single_dataset(image_encoder, train_dataset, args)
@@ -151,17 +153,18 @@ def finetune(rank, args):
             labels = batch["labels"].cuda()
             data_time = time.time() - start_time
 
-            logits = ddp_model(inputs)
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                logits = ddp_model(inputs)
+                loss = loss_fn(logits, labels)
 
-            loss = loss_fn(logits, labels)
-
-            loss.backward()
+            scaler.scale(loss).backward()
 
             if (i + 1) % args.num_grad_accumulation == 0:
                 scheduler(step)
 
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
                 optimizer.zero_grad()
 
             batch_time = time.time() - start_time
