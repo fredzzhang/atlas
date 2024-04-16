@@ -238,6 +238,7 @@ def finetune(rank, args):
 
 
 if __name__ == "__main__":
+    
     epochs = {
         "Cars": 35,
         "DTD": 76,
@@ -258,8 +259,11 @@ if __name__ == "__main__":
         "OxfordIIITPet": 5,
         "CUB200": 20,
         "PascalVOC": 10,
-        "Country211": 15
+        "Country211": 15,
+        "UCF101": 20,
+        "Caltech101":10,
     }
+    
 
     for dataset in epochs:
         args = parse_arguments()
@@ -273,7 +277,7 @@ if __name__ == "__main__":
         args.batch_size = 32 if args.model == "ViT-L-14" else 128
         args.num_grad_accumulation = 4 if args.model == "ViT-L-14" else 1
 
-        if args.seed is not None:
+        if args.seed is not None and False:
             args.save = f"checkpoints_{args.seed}/{args.model}"
         else:
             args.save = f"checkpoints/{args.model}"

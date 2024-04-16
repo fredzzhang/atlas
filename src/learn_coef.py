@@ -263,9 +263,9 @@ def main(rank, args):
     pool = [
         "Cars", "DTD", "EuroSAT", "GTSRB",
         "MNIST", "RESISC45", "SUN397", "SVHN", "CIFAR10",
-        "CIFAR100", "STL10", "Food101", "Caltech256",
+        "CIFAR100", "ImageNet", "STL10", "Food101", "Caltech256",
         "FGVCAircraft", "Flowers102", "OxfordIIITPet", "CUB200",
-        "PascalVOC", "Country211"  #"ImageNet", STL
+        "PascalVOC", "Country211", "Caltech101", "UCF101"
     ]
     VIT_B_32_hugg= ['laion400m_e31', 'laion400m_e32', 'laion2b_e16', 'laion2b_s34b_b79k', 'datacomp_xl_s13b_b90k', 'datacomp_m_s128m_b4k', 'commonpool_m_clip_s128m_b4k', 'commonpool_m_laion_s128m_b4k', 'commonpool_m_image_s128m_b4k', 'commonpool_m_text_s128m_b4k', 'commonpool_m_basic_s128m_b4k', 'commonpool_m_s128m_b4k', 'datacomp_s_s13m_b4k', 'commonpool_s_clip_s13m_b4k', 'commonpool_s_laion_s13m_b4k', 'commonpool_s_image_s13m_b4k', 'commonpool_s_text_s13m_b4k', 'commonpool_s_basic_s13m_b4k',  'commonpool_s_s13m_b4k'] #'openai' (zero-shot base)
     
@@ -1138,8 +1138,10 @@ if __name__ == "__main__":
         "CUB200": 10,
         "PascalVOC": 10,
         "Country211": 10,
+        "Caltech101": 10,
+        "UCF101": 10,
     }
-
+    
     args = parse_arguments()
     args.datasets = datasets
     # HACK: Some command line arguments are overwritten by defaults here.
