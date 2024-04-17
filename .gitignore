@@ -1,4 +1,12 @@
+# Cached experiment results and logs
 checkpoints*
+*log*
+cache
+*.pt
+*.png
+*.json
+out
+err
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
