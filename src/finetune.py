@@ -100,10 +100,11 @@ def finetune(rank, args):
         location=args.data_location,
         batch_size=args.batch_size,
     )
+    
     data_loader = get_dataloader(dataset, is_train=True, args=args, image_encoder=None)
     num_batches = len(dataset.train_loader)
 
-    if args.lora:
+    if args.lora and is_main_process():
         import minlora
         minlora.add_lora(model.image_encoder)
         params = list(minlora.get_lora_params(model.image_encoder))
@@ -118,7 +119,7 @@ def finetune(rank, args):
         find_unused_parameters=True,
         output_device=rank,
     )
-
+    
     if args.ls > 0:
         loss_fn = LabelSmoothing(args.ls)
     else:
@@ -213,8 +214,6 @@ def finetune(rank, args):
             #I have not found a way to move the lora params back into training mode
             eval_single_dataset(image_encoder, train_dataset, dataset, args)
             
-
-    eval_single_dataset(image_encoder, train_dataset, dataset, args, test=True)        
     if args.save is not None and is_main_process():
         zs_path = (
             os.path.join(ckpdir, "linear_zeroshot.pt")
@@ -222,7 +221,7 @@ def finetune(rank, args):
             else os.path.join(ckpdir, "zeroshot.pt")
         )
         if args.lora:
-            lora_state_dict = minlora.get_lora_state_dict(ddp_model.module)
+            lora_state_dict = minlora.get_lora_state_dict(ddp_model)
             torch.save(lora_state_dict, os.path.join(ckpdir, "lora.pt"))
         else:
             ft_path = (
@@ -232,15 +231,15 @@ def finetune(rank, args):
             )
             image_encoder.save(ft_path)
             
-        return zs_path, ft_path
-
+    eval_single_dataset(image_encoder, train_dataset, dataset, args, test=True)        
     cleanup_ddp()
+    return zs_path, ft_path
 
 
 if __name__ == "__main__":
     
     epochs = {
-        "Cars": 35,
+        "Cars": 1,
         "DTD": 76,
         "EuroSAT": 13,
         "GTSRB": 11,

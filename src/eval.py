@@ -42,7 +42,7 @@ def get_val_features(image_encoder, dataset_name, dataset, args):
     logits_ = []
     with torch.no_grad():
         top1, correct, n = 0.0, 0.0, 0.0
-        for _, data in enumerate(tqdm.tqdm(dataloader)):
+        for _, data in enumerate(tqdm.tqdm(dataloader, disable=args.no_tqdm)):
             data = maybe_dictionarize(data)
             x = data["images"].to(device)
             y = data["labels"].to(device)
@@ -93,7 +93,7 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
 
     with torch.no_grad():
         top1, correct, n = 0.0, 0.0, 0.0
-        for _, data in enumerate(tqdm.tqdm(dataloader)):
+        for _, data in enumerate(tqdm.tqdm(dataloader, disable=args.no_tqdm)):
             data = maybe_dictionarize(data)
             x = data["images"].to(device)
             y = data["labels"].to(device)
@@ -162,7 +162,7 @@ def eval_single_train_dataset(image_encoder, dataset_name, dataloader, args):
 
     with torch.no_grad():
         top1, correct, n = 0.0, 0.0, 0.0
-        for _, data in enumerate(tqdm.tqdm(dataloader)):
+        for _, data in enumerate(tqdm.tqdm(dataloader, disable=args.no_tqdm)):
             data = maybe_dictionarize(data, index=True)
             x = data["images"].to(device)
             y = data["labels"].to(device)

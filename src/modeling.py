@@ -5,7 +5,7 @@ from src import utils
 
 
 class ImageEncoder(torch.nn.Module):
-    def __init__(self, args, keep_lang=False):
+    def __init__(self, args, keep_lang=False, state_dict=None):
         super().__init__()
 
         print(f"Loading {args.model} pre-trained weights.")
@@ -24,6 +24,9 @@ class ImageEncoder(torch.nn.Module):
         ) = open_clip.create_model_and_transforms(
             name, pretrained=pretrained, cache_dir=args.openclip_cachedir
         )
+
+        if state_dict is not None:
+            self.model.load_state_dict(state_dict)
 
         
 
@@ -50,13 +53,13 @@ class ImageEncoder(torch.nn.Module):
         return cls.load(model_name, state_dict)
 
     @classmethod
-    def load_from_state_dict(cls, model_name, state_dict):
+    def load_from_state_dict(cls, args, state_dict):
         (
             self.model,
             self.train_preprocess,
             self.val_preprocess,
         ) = open_clip.create_model_and_transforms(
-            name, pretrained=pretrained, cache_dir=args.openclip_cachedir
+            args.model, pretrained="openai", cache_dir=args.openclip_cachedir
         )
         self.model.load_from_state_dict(state_dict)
 

@@ -331,6 +331,12 @@ def main(rank, args):
 
     if args.fname is not None:
         fname = os.path.join(fname, f"results.txt")
+        try:
+            os.remove(fname)
+            os.remove(fname.replace(".txt", ".pth"))
+        except OSError:
+            pass
+        
     else:
         fname = os.path.join(fname, f"{datetime.today().strftime('%Y-%m-%d-%H-%M')}.txt")
         
@@ -340,7 +346,8 @@ def main(rank, args):
             os.mkdir('/'.join(splt[:i+1]))
 
 
-    fname2 = f"results/results_{args.loss_fn}{'_layerwise' if args.layerwise else '_global'}{'_optitv' if args.optimally_random else ''}{'_attn' if args.attn else ''}{'_semi'+str(args.semi) if args.semi else ''}{'_tipft' if args.tip_ft else ''}{'_tiponly' if args.tip_only else ''}{'_tipcot' if args.tip_cot else ''}{'_lp' if args.lp else ''}{'_select'+str(args.select_tvs) if args.select_tvs else ''}{'_memeff' if args.mem_eff else ''}{'_random' if args.random else ''}{'_worse' if args.worse else ''}_{datetime.today().strftime('%Y-%m-%d-%H:%M')}.txt"
+    fname2 = f"results/results_{args.loss_fn}{'_layerwise' if args.layerwise else '_global'}{'_optitv' if args.optimally_random else ''}{'_attn' if args.attn else ''}{'_semi'+str(args.semi) if args.semi else ''}{'_tipft' if args.tip_ft else ''}{'_tiponly' if args.tip_only else ''}{'_tipcot' if args.tip_cot else ''}{'_lp' if args.lp else ''}{'_select'+str(args.select_tvs) if args.select_tvs else ''}{'_memeff' if args.mem_eff else ''}{'_random' if args.random else ''}{'_worse' if args.worse else ''}{'_blockwisesel' if args.blockwise_select else ''}_{datetime.today().strftime('%Y-%m-%d-%H:%M')}.txt"
+    
     if not args.no_log:
         with open(fname, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
         with open(fname2, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
@@ -540,7 +547,7 @@ def train(task_vectors, args):
                     targets = - torch.ones(len(data_loader.dataset), dtype=torch.long)
                     preds = - torch.ones(len(data_loader.dataset), dtype=torch.long)
                     with torch.no_grad():
-                        for i, batch in enumerate(tqdm(data_loader)):
+                        for i, batch in enumerate(tqdm(data_loader, disable=args.no_tqdm)):
                             batch = maybe_dictionarize(batch, index=True)
                             targets[batch["index"]] = batch["labels"].to(targets.device)
                             if i >= 1000:
@@ -632,7 +639,7 @@ def train(task_vectors, args):
                 print("Memory efficient selection")
                 n_tvs = len(task_vectors)
                 j = 0
-                grad = torch.zeros(n_tvs)
+                grad = torch.zeros(n_tvs, len(coef[0]))
                 while j*args.select_tvs < n_tvs:
                     model = model.module #Fabric stuff
                     model.image_encoder.update_tvs(task_vectors[j*args.select_tvs:(j+1)*args.select_tvs])
@@ -657,7 +664,7 @@ def train(task_vectors, args):
                         loss.backward()
                         
                     print(f"Processed {(j+1)*args.select_tvs} out of {n_tvs} task vectors")
-                    grad[j*args.select_tvs:(j+1)*args.select_tvs] = torch.abs(coef.grad.cpu()).mean(1)
+                    grad[j*args.select_tvs:(j+1)*args.select_tvs] = torch.abs(coef.grad.cpu())
                     j += 1
                     optimizer.zero_grad()
             else:
@@ -670,20 +677,42 @@ def train(task_vectors, args):
                     loss = F.cross_entropy(logits, labels)
                     loss.backward()
                 
-                grad = torch.abs(coef.grad.cpu()).mean(1)
+                grad = torch.abs(coef.grad.cpu())
                 optimizer.zero_grad()
-            #plt.bar(torch.arange(grad.shape[0]), torch.abs(grad).mean(1))
-            #print(grad)
-            print(f"Highest {args.select_tvs} grads for dataset {test_dataset}: {[pool[i] for i in torch.argsort(grad)[-args.select_tvs:]]}, lowest {[pool[i] for i in torch.argsort(grad)[:args.select_tvs]]}")
-            #plt.show()
 
-            model = model.module #Fabric stuff
-            if args.worse:
-                model.image_encoder.update_tvs([task_vectors[i] for i in torch.argsort(grad)[:args.select_tvs]])
-            elif args.random:
-                model.image_encoder.update_tvs([task_vectors[i] for i in torch.randperm(len(task_vectors))[:args.select_tvs]])
+            if args.blockwise_select:
+                print("Blockwise selection of the task vectors")
+                selection = torch.argsort(-grad, dim=0)[:args.select_tvs]
+                new_tvs = [{} for _ in range(args.select_tvs)]
+                names = [[pool[s] for s in selection[:, i]] for i in range(len(selection[0]))]
+                #for n in names:
+                #    print(f'{n}\n')
+                for j, k in enumerate(task_vectors[0].vector.keys()):
+                    for i in range(args.select_tvs):
+                        new_tvs[i][k] = task_vectors[selection[i, j]].vector[k]
+
+                updated_tvs = copy.deepcopy(task_vectors)
+                for i in range(args.select_tvs):
+                    updated_tvs[i].vector = new_tvs[i]
+                    
+                model = model.module #Fabric stuff
+                model.image_encoder.update_tvs(updated_tvs[:args.select_tvs])
+                
             else:
-                model.image_encoder.update_tvs([task_vectors[i] for i in torch.argsort(grad)[-args.select_tvs:]])
+                grad = grad.mean(1)
+                
+                #plt.bar(torch.arange(grad.shape[0]), torch.abs(grad).mean(1))
+                #print(grad)
+                print(f"Highest {args.select_tvs} grads for dataset {test_dataset}: {[pool[i] for i in torch.argsort(grad)[-args.select_tvs:]]}, lowest {[pool[i] for i in torch.argsort(grad)[:args.select_tvs]]}")
+                #plt.show()
+
+                model = model.module #Fabric stuff
+                if args.worse:
+                    model.image_encoder.update_tvs([task_vectors[i] for i in torch.argsort(grad)[:args.select_tvs]])
+                elif args.random:
+                    model.image_encoder.update_tvs([task_vectors[i] for i in torch.randperm(len(task_vectors))[:args.select_tvs]])
+                else:
+                    model.image_encoder.update_tvs([task_vectors[i] for i in torch.argsort(grad)[-args.select_tvs:]])
                 
             if args.finetuning_mode == "linear":
                 coef = model.image_encoder.model.coef
@@ -848,7 +877,7 @@ def train(task_vectors, args):
                 data_loader_t = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=subset_t, num_workers=16)
 
                 aug_n = 1
-                tbar = tqdm(range(aug_n))
+                tbar = tqdm(range(aug_n), disable=args.no_tqdm)
                 tbar.set_description("Generating cache")
                 labels = []
                 all_features, features = [], []
@@ -941,7 +970,7 @@ def train(task_vectors, args):
                     if args.tip_cot:
                         adjust_lr_lp(optimizer, lrs[epoch], 0.1)
                         
-                tbar = tqdm(data_loader)
+                tbar = tqdm(data_loader, disable=args.no_tqdm)
                 tbar.set_description(f"Learning adaptor, epoch {epoch}/{args.epochs}, lr {optimizer.param_groups[0]['lr']:.3f}")
                 for i, batch in enumerate(tbar):
                     batch = maybe_dictionarize(batch, index=True)
@@ -986,7 +1015,7 @@ def train(task_vectors, args):
                     logits = torch.cat(logits_, dim=0)
                     labels = torch.cat(labels_, dim=0)
                     del feats_, logits_, labels_
-                    tbar = tqdm(range(1, 300))
+                    tbar = tqdm(range(1, 300), disable=args.no_tqdm)
                     tbar.set_description(f"Tuning {'LP++' if args.lp else 'TIP'}")
                     lrs = cosine_annealing_lr(0.001, 0, 300)
                     for e in tbar:
@@ -1154,6 +1183,7 @@ if __name__ == "__main__":
         args.save = f"checkpoints_{args.seed}/{args.model}"
     else:
         args.save = f"checkpoints/{args.model}"
+        
     #torch.multiprocessing.spawn(main, args=(args,), nprocs=args.world_size)
     seed = int(torch.exp(torch.tensor(args.seed)) * 3.1415 * 1000)
     np.random.seed(seed)

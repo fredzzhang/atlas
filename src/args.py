@@ -288,6 +288,18 @@ def parse_arguments():
         action="store_true",
         help="Use LoRA task vectors."
     )
+    parser.add_argument(
+        "--no-tqdm",
+        default=False,
+        action="store_true",
+        help="Decativate tqdm logging on stderr."
+    )
+    parser.add_argument(
+        "--blockwise-select",
+        default=False,
+        action="store_true",
+        help="Select the task vector budget at the layer level."
+    )
     parsed_args = parser.parse_args()
     parsed_args.device = "cuda" if torch.cuda.is_available() else "cpu"
 
