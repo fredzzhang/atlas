@@ -273,8 +273,8 @@ if __name__ == "__main__":
         args.train_dataset = dataset + "Val"
 
         # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
-        args.batch_size = 32 if args.model == "ViT-L-14" else 128
-        args.num_grad_accumulation = 4 if args.model == "ViT-L-14" else 1
+        args.batch_size = 64 if args.model == "ViT-L-14" else 128
+        args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
 
         if args.seed is not None and False:
             args.save = f"checkpoints_{args.seed}/{args.model}"
