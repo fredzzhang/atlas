@@ -228,3 +228,14 @@ def extract_datasets(f):
     for l in lines[1:]:
         datasets.append(l.split(' ')[0].replace('\n',''))
     return datasets
+
+
+
+def _select_lora(lora_layer, index):
+    lora_layer.lora_A = lora_layer.lora_As[index]
+    lora_layer.lora_B = lora_layer.lora_Bs[index]
+
+
+def select_lora(model, index):
+    model.apply(apply_to_lora(lambda x: _select_lora(x, index)))
+    return model

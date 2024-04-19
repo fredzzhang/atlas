@@ -266,9 +266,7 @@ if __name__ == "__main__":
     epochs = {
         "UCF101": 20,
         "Caltech101":10,
-    }
-
-    
+    }    
 
     for dataset in epochs:
         args = parse_arguments()

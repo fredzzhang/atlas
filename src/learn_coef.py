@@ -32,6 +32,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import copy
 from lightning.fabric import Fabric
+import minlora
 
 @torch.jit.script
 def softmax_entropy(x: torch.Tensor) -> torch.Tensor:
@@ -146,16 +147,23 @@ class LinearizedModel_(nn.Module):
         return out + dp
     
 class ImageEncoder_(nn.Module):
-    def __init__(self, model, task_vectors, device, layerwise=False, attn=False) -> None:
+    def __init__(self, model, task_vectors, device, layerwise=False, attn=False, lora=False) -> None:
         """A wrapper class to enable compositions of task vectors"""
         super().__init__()
 
+        if args.lora:
+            minlora.add_lora(model)
+            
         func, params, self.buffer = make_functional_with_buffers(model)
         # NOTE This is important to avoid the following error
         # NotImplementedError: Cannot copy out of meta tensor; no data!
-        self.func = lambda p, x: func(p, self.buffer, x)
+        self.func = lambda p, b, x: func(p, b, x)
+        #self.func = func
         self.params = torch.nn.ParameterList(params)
-        for p, (name, _) in zip(self.params, model.named_parameters()):
+        self.attn_l = []
+        n = 0
+        self.names = []
+        for i, (p, (name, _)) in enumerate(zip(self.params, model.named_parameters())):
             if ".visual" not in name:
                 p.requires_grad = False
             elif args.tune_clip:
@@ -163,14 +171,14 @@ class ImageEncoder_(nn.Module):
             else:
                 p.requires_grad = False
                 
-        
-        self.attn = attn
-        self.attn_l = []
-        n = 0
-        for i, (name, p) in enumerate(model.named_parameters()):
+            self.names.append(name)
+            
             if 'attn.in_proj' in name:
                 self.attn_l.append(i)
                 n+=1
+                            
+        self.attn = attn
+        self.layerwise = layerwise
                 
         self.device = device
         # Copy the attributes from the image encoder.
@@ -183,9 +191,11 @@ class ImageEncoder_(nn.Module):
         self.tv_cpu = args.tv_cpu
         
     def update_tvs(self, task_vectors):
-        dparams = []        
+        if hasattr(self, "dparams"):            
+            del self.dparams
+        dparams = []
         for tv in task_vectors:
-            dp = [tv.vector[k] for k in tv.vector]
+            dp = [tv.vector[k] for k in self.names]
             dparams.append(dp)
         self.dparams = dparams
 
@@ -204,8 +214,6 @@ class ImageEncoder_(nn.Module):
             self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params)))
         else:
             self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors)))
-        #Move the parameters back to where they belong
-        self.to(device)
 
     def _apply(self, fn, *args, **kwargs):
         """Override method to relocate buffer list
@@ -214,14 +222,14 @@ class ImageEncoder_(nn.Module):
         Newer verions have added another optional argument `recurse=True`.
         """
         new_self = super()._apply(fn=fn, *args, **kwargs)
-        new_self.buffer = (fn(x) for x in new_self.buffer)
+        new_self.buffer = tuple(fn(x, *args, **kwargs) for x in new_self.buffer)
         if not self.tv_cpu:
-            new_self.dparams = [[fn(dp) for dp in dparam] for dparam in new_self.dparams]
+            new_self.dparams = [[fn(dp, *args, **kwargs) for dp in dparam] for dparam in new_self.dparams]            
         return new_self
         
     def __call__(self, x, zero_shot=False) -> torch.Tensor:
         if zero_shot:
-            return self.func(self.params, x)
+            return self.func(self.params, self.buffer, x)
         
         if self.attn:
             dparams = [sum([p.to(c.device, non_blocking=True) * c[i] for p, c in zip(dp, self.coef)]) if i not in self.attn_l else sum([torch.cat((p[:len(p)//3].to(c.device, non_blocking=True) * c[i, 0], p[len(p)//3:2*len(p)//3].to(c.device, non_blocking=True) * c[i, 1], p[2*len(p)//3:len(p)].to(c.device, non_blocking=True) * c[i, 2]))  for p, c in zip(dp, self.coef1)]) for i, dp in enumerate(zip(*self.dparams))]
@@ -229,9 +237,9 @@ class ImageEncoder_(nn.Module):
             dparams = [sum([p.to(c.device, non_blocking=True) * c[i] for p, c in zip(dp, self.coef)]) for i, dp in enumerate(zip(*self.dparams))]
         else:
             dparams = [sum([p.to(c.device, non_blocking=True) * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
-        
+
         new_params = [dp + p for i, (dp, p) in enumerate(zip(dparams, self.params))]
-        return self.func(new_params, x)
+        return self.func(new_params, self.buffer, x)
 
 class IndexWrapper(nn.Module):
     def __init__(self, dataset):
@@ -284,7 +292,11 @@ def main(rank, args):
     task_vectors = {}
     l = 0
     for i, dataset in enumerate(pool):
-        if args.hugg:
+        if args.lora:
+            pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
+            finetuned_checkpoint = f"{args.save}/{dataset}Val/lora.pt"
+            task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint, scale=args.scale, lora=args.lora)
+        elif args.hugg:
             pretrained_checkpoint = f"{args.save}/CarsVal/zeroshot.pt"
             task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, scale=args.scale, hugg_checkpoint=dataset)            
         elif "randomtv" in dataset:
@@ -302,7 +314,7 @@ def main(rank, args):
             pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
             finetuned_checkpoint = f"{args.save}/{dataset}Val/finetuned.pt"
             task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint, scale=args.scale)
-            task_vectors[dataset] = task_vectors[dataset]
+
 
     args.rank = rank
     fname = f"results/{args.model}/"
@@ -415,7 +427,8 @@ def train(task_vectors, args):
         image_encoder.model = LinearizedModel_(image_encoder.model, task_vectors, device=args.rank)
     else:
         image_encoder = ImageEncoder(args)
-        image_encoder = ImageEncoder_(image_encoder, task_vectors, device=args.rank, layerwise=args.layerwise, attn=args.attn)
+        image_encoder = ImageEncoder_(image_encoder, task_vectors, device=args.rank, layerwise=args.layerwise, attn=args.attn, lora=args.lora)
+
     
     classification_head = get_classification_head(args, test_dataset)
     model = ImageClassifier(image_encoder, classification_head)
@@ -501,11 +514,11 @@ def train(task_vectors, args):
         if args.attn:
             coef1 = model.image_encoder.coef1
 
-    if not args.tune_clip:
+    if not args.tune_clip and 'RN' not in args.model:
         model.eval()
     else:
-        model.train()
-   
+        model.train() #Compute batch norm stats
+
     best_acc = 0
     max_ep = args.epochs
     if args.tip_only:
@@ -519,7 +532,7 @@ def train(task_vectors, args):
     batch_time = 0
     epoch = 0
 
-    fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="16-mixed")
+    fabric = Fabric(accelerator="cuda", devices=1, strategy="dp" if "RN" in args.model else "ddp", precision="16-mixed") #dp because of RN buffers apparently cause the coefs to not receive any grads, there may be a better solution
     fabric.launch()
 
     model, optimizer = fabric.setup(model, optimizer)
@@ -529,7 +542,6 @@ def train(task_vectors, args):
         # Evaluate before each epoch
         if args.lr_scheduler=="annealing":
             adjust_lr(optimizer, lrs[epoch], [1, .0001])#Lower lr for clip backbone in case of args.tune_clip
-
         if True:#is_main_process():
             # We only need to evaluate the model on the first GPU.
             image_encoder = model.image_encoder
@@ -679,7 +691,7 @@ def train(task_vectors, args):
                         logits = model(inputs)
                         
                         loss = F.cross_entropy(logits, labels)
-                        loss.backward()
+                        fabric.backward(loss)
                         
                     print(f"Processed {(j+1)*args.select_tvs} out of {n_tvs} task vectors")
                     grad[j*args.select_tvs:(j+1)*args.select_tvs] = torch.abs(coef.grad.cpu())
@@ -693,7 +705,7 @@ def train(task_vectors, args):
                     logits = model(inputs)
                     
                     loss = F.cross_entropy(logits, labels)
-                    loss.backward()
+                    fabric.backward(loss)
                 
                 grad = torch.abs(coef.grad.cpu())
                 optimizer.zero_grad()
@@ -827,8 +839,7 @@ def train(task_vectors, args):
             if args.l1:
                 loss += l1_reg(model.image_encoder.coef)
 
-                    
-            fabric.backward(loss)
+            fabric.backward(loss)            
             #loss.backward()
 
             if (i + 1) % args.num_grad_accumulation == 0:
@@ -1136,8 +1147,10 @@ def train(task_vectors, args):
     if args.epochs == 0:
         base_acc = acc['top1']
          
-    cleanup_ddp()
     del image_encoder.dparams # Manual delete of the .cuda() task vectors. Because of the list of list, these are not detected as parameters of the ImageEncoder_ module and are not automatically deleted with image_encoder. To improve
+    if args.blockwise_select:
+        del updated_tvs
+        
     if not args.tip_ft and not args.tip_cot or args.lp:
         beta_alpha = (0, 0)
     else:
@@ -1166,7 +1179,7 @@ if __name__ == "__main__":
     # Epochs w/ lr=1e-2 for entropy objective
     
     datasets = {
-        "Cars": 20,
+        "Cars": 10,
         "DTD": 10,
         "EuroSAT": 10,
         "GTSRB": 10,
@@ -1215,6 +1228,5 @@ if __name__ == "__main__":
     seed = int(torch.exp(torch.tensor(args.seed)) * 3.1415 * 1000)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    
+    torch.cuda.manual_seed(seed)    
     main(0, args)

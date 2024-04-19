@@ -6,10 +6,9 @@ from src.linearize import LinearizedImageEncoder
 
 import matplotlib.pyplot as plt
 
-
 class _TaskVector(abc.ABC):
     def __init__(
-            self, pretrained_checkpoint=None, finetuned_checkpoint=None, hugg_checkpoint=None, vector=None, scale=False,
+            self, pretrained_checkpoint=None, finetuned_checkpoint=None, hugg_checkpoint=None, vector=None, scale=False, lora=False
     ):
         """Initializes the task vector from a pretrained and a finetuned checkpoints.
 
@@ -17,7 +16,23 @@ class _TaskVector(abc.ABC):
         pretrained model, and another to the finetuned model), or by directly passying in
         the task vector state dict.
         """
-        if hugg_checkpoint is not None:
+
+        if lora:
+            
+            pretrained_state_dict = self._load_checkpoint(
+                pretrained_checkpoint
+            ).state_dict()
+
+            finetuned_state_dict = torch.load(finetuned_checkpoint, map_location="cpu")
+            self.vector = {}
+            for key in pretrained_state_dict:
+                if "mlp" in key and "lora_" not in key: #pytorch parametrization stuff
+                    key = key.replace(".weight", ".parametrizations.weight.original")
+                self.vector[key] = torch.tensor(0)
+            for key in finetuned_state_dict:
+                self.vector[key.replace("module.image_encoder.", "")] = finetuned_state_dict[key]            
+
+        elif hugg_checkpoint is not None:
             pretrained_state_dict = self._load_checkpoint(
                 pretrained_checkpoint
             ).state_dict()
@@ -31,14 +46,9 @@ class _TaskVector(abc.ABC):
                     continue
                 if pretrained_state_dict[key].dtype == torch.uint8:
                     continue
-                if key in [""]:#["model.positional_embedding", "model.text_projection", "model.logit_scale", "model.visual.class_embedding", "model.visual.positional_embedding"]:
-                    self.vector[key] = (
-                        pretrained_state_dict[key]
-                    )
-                else:
-                    self.vector[key] = (
-                        finetuned_state_dict[key.replace("model.","")] #- pretrained_state_dict[key]
-                    )
+                self.vector[key] = (
+                    finetuned_state_dict[key.replace("model.","")] #- pretrained_state_dict[key]
+                )
             
         elif vector is not None:
             pretrained_state_dict = self._load_checkpoint(
@@ -106,7 +116,7 @@ class _TaskVector(abc.ABC):
                         continue
                     if pretrained_state_dict[key].dtype == torch.uint8:
                         continue
-                    self.vector[key] = (finetuned_state_dict[key] - pretrained_state_dict[key]).half()
+                    self.vector[key] = (finetuned_state_dict[key] - pretrained_state_dict[key])
         if scale:
             for key in pretrained_state_dict:
                 self.vector[key] = self.vector[key] / self.norm()
@@ -119,7 +129,9 @@ class _TaskVector(abc.ABC):
                     #norm1 += torch.sqrt((pretrained_state_dict[key] * pretrained_state_dict[key]).sum())
                     #norm2 += torch.sqrt((self.vector[key]*self.vector[key]).sum())
                 #for key in pretrained_state_dict:
-                #    self.vector[key] = self.vector[key] * norm1 / norm2 
+                #    self.vector[key] = self.vector[key] * norm1 / norm2
+        for key in self.vector.keys():
+            self.vector[key] = self.vector[key].half()
                 
             
 
