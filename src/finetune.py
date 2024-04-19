@@ -134,8 +134,9 @@ def finetune(rank, args):
 
     scaler = GradScaler()
     # Test the model at the start
-    image_encoder = ddp_model.module.image_encoder
-    eval_single_dataset(image_encoder, train_dataset, args)
+    if is_main_process():
+        image_encoder = ddp_model.module.image_encoder
+        eval_single_dataset(image_encoder, train_dataset, args)
     for epoch in range(args.epochs):
         ddp_model.train()
 
@@ -156,6 +157,8 @@ def finetune(rank, args):
             with torch.autocast(device_type='cuda', dtype=torch.float16):
                 logits = ddp_model(inputs)
                 loss = loss_fn(logits, labels)
+                # Scale the loss
+                loss = loss / args.num_grad_accumulation
 
             scaler.scale(loss).backward()
 
@@ -195,8 +198,9 @@ def finetune(rank, args):
                 )
 
         # Test the model each epoch 
-        image_encoder = ddp_model.module.image_encoder
-        eval_single_dataset(image_encoder, train_dataset, args)
+        if is_main_process():
+            image_encoder = ddp_model.module.image_encoder
+            eval_single_dataset(image_encoder, train_dataset, args)
 
     if args.save is not None and is_main_process():
         zs_path = (

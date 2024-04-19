@@ -169,6 +169,8 @@ def main(rank, args):
                 labels = [batch["labels"].cuda(),] + [r_batch["labels"].cuda() for r_batch in rmng_batch]
                 all_losses = [loss_fn(x, y) for x, y in zip(logits, labels)]
                 loss = sum(all_losses)
+                # Scale the loss
+                loss = loss / args.num_grad_accumulation
 
             scaler.scale(loss).backward()
 

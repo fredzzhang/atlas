@@ -172,6 +172,8 @@ def main(rank, args):
                 """Gradient ascent on the target dataset,
                 gradient descent on the control dataset."""
                 loss = -loss_tgt + loss_ctr
+                # Scale the loss
+                loss = loss / args.num_grad_accumulation
 
             scaler.scale(loss).backward()
 
