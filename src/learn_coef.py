@@ -25,7 +25,7 @@ from src.heads import get_classification_head
 from src.modeling import ImageEncoder, ImageClassifier
 from src.linearize import LinearizedImageEncoder
 from src.task_vectors import LinearizedTaskVector, NonLinearTaskVector
-from src.utils import cosine_lr, cosine_annealing_lr, adjust_lr, TwoTransform, TwoAsymetricTransform, adjust_lr_lp
+from src.utils import cosine_lr, cosine_annealing_lr, adjust_lr, TwoTransform, TwoAsymetricTransform, adjust_lr_lp, extract_datasets
 from src.sampler import TwoStreamBatchSampler, SubsetSampler
 
 import matplotlib.pyplot as plt
@@ -155,8 +155,14 @@ class ImageEncoder_(nn.Module):
         # NotImplementedError: Cannot copy out of meta tensor; no data!
         self.func = lambda p, x: func(p, self.buffer, x)
         self.params = torch.nn.ParameterList(params)
-        for p in self.params:
-            p.requires_grad = False
+        for p, (name, _) in zip(self.params, model.named_parameters()):
+            if ".visual" not in name:
+                p.requires_grad = False
+            elif args.tune_clip:
+                p.requires_grad = True
+            else:
+                p.requires_grad = False
+                
         
         self.attn = attn
         self.attn_l = []
@@ -330,12 +336,13 @@ def main(rank, args):
             fname = os.path.join(fname, "tv")
 
     if args.fname is not None:
-        fname = os.path.join(fname, f"results.txt")
-        try:
-            os.remove(fname)
-            os.remove(fname.replace(".txt", ".pth"))
-        except OSError:
-            pass
+        fname = os.path.join(fname, f"results.txt")        
+        if not args.merge:
+            try:
+                os.remove(fname)
+                os.remove(fname.replace(".txt", ".pth"))
+            except OSError:
+                pass
         
     else:
         fname = os.path.join(fname, f"{datetime.today().strftime('%Y-%m-%d-%H-%M')}.txt")
@@ -345,13 +352,16 @@ def main(rank, args):
         if not os.path.exists('/'.join(splt[:i+1])):
             os.mkdir('/'.join(splt[:i+1]))
 
-
     fname2 = f"results/results_{args.loss_fn}{'_layerwise' if args.layerwise else '_global'}{'_optitv' if args.optimally_random else ''}{'_attn' if args.attn else ''}{'_semi'+str(args.semi) if args.semi else ''}{'_tipft' if args.tip_ft else ''}{'_tiponly' if args.tip_only else ''}{'_tipcot' if args.tip_cot else ''}{'_lp' if args.lp else ''}{'_select'+str(args.select_tvs) if args.select_tvs else ''}{'_memeff' if args.mem_eff else ''}{'_random' if args.random else ''}{'_worse' if args.worse else ''}{'_blockwisesel' if args.blockwise_select else ''}_{datetime.today().strftime('%Y-%m-%d-%H:%M')}.txt"
     
-    if not args.no_log:
+    if not args.no_log and not args.merge:
         with open(fname, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
         with open(fname2, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
-    coef_dict = {}
+    if args.merge:
+        coef_dict = torch.load(fname.replace('.txt', '.pth'))
+    else:
+        coef_dict = {}
+        
     
     for dataset in args.datasets:
         args.epochs = args.datasets[dataset]
@@ -421,13 +431,14 @@ def train(task_vectors, args):
         )
 
         preprocess_fn = TwoAsymetricTransform(model.val_preprocess, preprocess_fn)
+        
     else: #Using the TIP augmentations to learn the coeficients but this does not make a huge difference.
         preprocess_fn = torchvision.transforms.Compose([
             torchvision.transforms.RandomResizedCrop(size=224, scale=(0.5, 1), interpolation=torchvision.transforms.InterpolationMode.BICUBIC),
             torchvision.transforms.RandomHorizontalFlip(p=0.5),
         ] + model.val_preprocess.transforms[-3:])
         
-        #preprocess_fn = model.val_preprocess
+        #preprocess_fn = model.train_preprocess
 
     dataset = get_dataset(
         test_dataset,
@@ -450,7 +461,7 @@ def train(task_vectors, args):
 
     # Override shuffle to True
     data_loader.shuffle = True
-    num_batches = len(data_loader)            
+    num_batches = len(data_loader)
 
     #TO DO: implement lightning Fabric support for DDP and multi-gpu    
     loss_fn = {
@@ -465,8 +476,12 @@ def train(task_vectors, args):
         'simclr_mixup': simclr_mixup_loss,
     }[args.loss_fn]
 
-    params = [p for p in model.parameters() if p.requires_grad]    
-    optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
+    params = [p for p in model.parameters() if p.requires_grad]
+    if args.tune_clip:
+        optimizer = torch.optim.AdamW([{'params': [model.image_encoder.coef] + [model.image_encoder.coef1]}, {'params': model.image_encoder.params}], lr=args.lr, weight_decay=args.wd)
+    else:
+        optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
+    #optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
     #optimizer = torch.optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=1e-5)
 
     if args.lr_scheduler=="annealing":
@@ -486,7 +501,10 @@ def train(task_vectors, args):
         if args.attn:
             coef1 = model.image_encoder.coef1
 
-    model.eval()
+    if not args.tune_clip:
+        model.eval()
+    else:
+        model.train()
    
     best_acc = 0
     max_ep = args.epochs
@@ -510,7 +528,7 @@ def train(task_vectors, args):
     for epoch in range(max_ep):
         # Evaluate before each epoch
         if args.lr_scheduler=="annealing":
-            adjust_lr(optimizer, lrs[epoch])
+            adjust_lr(optimizer, lrs[epoch], [1, .0001])#Lower lr for clip backbone in case of args.tune_clip
 
         if True:#is_main_process():
             # We only need to evaluate the model on the first GPU.
@@ -1146,8 +1164,9 @@ if __name__ == "__main__":
         sys.modules['__main__'] = learn_coef  # Ensures pickle lookups on __main__ find matching version
 
     # Epochs w/ lr=1e-2 for entropy objective
+    
     datasets = {
-        "Cars": 10,
+        "Cars": 20,
         "DTD": 10,
         "EuroSAT": 10,
         "GTSRB": 10,
@@ -1170,9 +1189,10 @@ if __name__ == "__main__":
         "Caltech101": 10,
         "UCF101": 10,
     }
+
     
     args = parse_arguments()
-    args.datasets = datasets
+    
     # HACK: Some command line arguments are overwritten by defaults here.
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 32 if args.model == "ViT-L-14" else 128
@@ -1183,7 +1203,14 @@ if __name__ == "__main__":
         args.save = f"checkpoints_{args.seed}/{args.model}"
     else:
         args.save = f"checkpoints/{args.model}"
+
+    if args.merge:
+        assert args.fname is not None, "args.fname needs to be specified"
+        print(f"Merging with {os.path.join(args.fname, str(args.seed), 'results.txt')}")
+        datasets_n = extract_datasets(os.path.join(args.fname, str(args.seed), "results.txt"))
+        datasets = {k:v for k,v in datasets.items() if k not in datasets_n}
         
+    args.datasets = datasets
     #torch.multiprocessing.spawn(main, args=(args,), nprocs=args.world_size)
     seed = int(torch.exp(torch.tensor(args.seed)) * 3.1415 * 1000)
     np.random.seed(seed)

@@ -300,6 +300,19 @@ def parse_arguments():
         action="store_true",
         help="Select the task vector budget at the layer level."
     )
+    parser.add_argument(
+        "--tune-clip",
+        default=False,
+        action="store_true",
+        help="Tune the clip backbone together with the TVs."
+    )
+    parser.add_argument(
+        "--merge",
+        default=False,
+        action='store_true',
+        help="Will run on the missing datasets from the results.txt specified through fname and complete the specified results.txt file. Needs fname to be specified."
+    )
+    
     parsed_args = parser.parse_args()
     parsed_args.device = "cuda" if torch.cuda.is_available() else "cpu"
 

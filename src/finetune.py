@@ -239,7 +239,7 @@ def finetune(rank, args):
 if __name__ == "__main__":
     
     epochs = {
-        "Cars": 1,
+        "Cars": 35,
         "DTD": 76,
         "EuroSAT": 13,
         "GTSRB": 11,
@@ -262,6 +262,12 @@ if __name__ == "__main__":
         "UCF101": 20,
         "Caltech101":10,
     }
+
+    epochs = {
+        "UCF101": 20,
+        "Caltech101":10,
+    }
+
     
 
     for dataset in epochs:

@@ -221,3 +221,10 @@ class MetaAdapter(nn.Module):
         attn = res + attn
         attn = F.normalize(attn, p=2, dim=-1)
         return attn
+
+def extract_datasets(f):
+    datasets = []
+    with open(f, 'r') as fi: lines=fi.readlines()
+    for l in lines[1:]:
+        datasets.append(l.split(' ')[0].replace('\n',''))
+    return datasets
