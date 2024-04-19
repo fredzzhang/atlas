@@ -37,7 +37,7 @@ class WeightedImageEncoder(nn.Module):
         self.val_preprocess = model.val_preprocess
         self.cache_dir = model.cache_dir
 
-        self.dparams = [[tv[k] for k in tv] for tv in task_vectors]
+        self.dparams = [[tv.vector[k] for k in tv.vector] for tv in task_vectors]
         self.blockwise = blockwise
         if blockwise:
             self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params)))
@@ -52,7 +52,7 @@ class WeightedImageEncoder(nn.Module):
         """
         new_self = super()._apply(fn=fn)
         new_self.buffer = (fn(x) for x in new_self.buffer)
-        new_self.dparams = [[fn(tv[k]) for k in tv] for tv in new_self.dparams]
+        new_self.dparams = [[fn(x) for x in tv] for tv in new_self.dparams]
         return new_self
 
     def forward(self, x) -> torch.Tensor:
@@ -83,7 +83,7 @@ class WeightedLinearizedModel(nn.Module):
         self.buffers0 = model.buffers0
         self._model_name = model._model_name
 
-        self.dparams = [[tv[k] for k in tv] for tv in task_vectors]
+        self.dparams = [[tv.vector[k] for k in tv.vector if k.startswith('model.params.')] for tv in task_vectors]
         self.blockwise = blockwise
         if blockwise:
             self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params0)))
@@ -98,7 +98,7 @@ class WeightedLinearizedModel(nn.Module):
         """
         new_self = super()._apply(fn=fn)
         new_self.buffers0 = (fn(x) for x in new_self.buffers0)
-        new_self.dparams = [[fn(tv[k]) for k in tv] for tv in new_self.dparams]
+        new_self.dparams = [[fn(x) for x in tv] for tv in new_self.dparams]
         return new_self
 
     def forward(self, x) -> torch.Tensor:
