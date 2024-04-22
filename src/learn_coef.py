@@ -1228,6 +1228,9 @@ if __name__ == "__main__":
     if "RN" in args.model:#RN models do not have attention layers. Leaving attn as True will cause a problem with coef1 receiving no gradients.
         args.attn = False
 
+    if args.lora:
+        args.attn = False
+
     if not args.layerwise:
         args.attn = False
 
