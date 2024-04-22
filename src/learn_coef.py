@@ -155,10 +155,12 @@ class ImageEncoder_(nn.Module):
             minlora.add_lora(model)
             
         func, params, self.buffer = make_functional_with_buffers(model)
+        self.base_func = [func]
         # NOTE This is important to avoid the following error
         # NotImplementedError: Cannot copy out of meta tensor; no data!
-        self.func = lambda p, b, x: func(p, b, x)
+        self.func = lambda p, b, x: self.base_func[0](p, b, x)
         #self.func = func
+        
         self.params = torch.nn.ParameterList(params)
         self.attn_l = []
         n = 0
@@ -176,7 +178,7 @@ class ImageEncoder_(nn.Module):
             if 'attn.in_proj' in name:
                 self.attn_l.append(i)
                 n+=1
-                            
+                
         self.attn = attn
         self.layerwise = layerwise
                 
@@ -197,6 +199,7 @@ class ImageEncoder_(nn.Module):
         for tv in task_vectors:
             dp = [tv.vector[k] for k in self.names]
             dparams.append(dp)
+                
         self.dparams = dparams
 
         device = self.params[0].device
@@ -215,6 +218,16 @@ class ImageEncoder_(nn.Module):
         else:
             self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors)))
 
+    def train(self, mode):
+        new_self = super().train(mode)
+        for name, child in new_self.base_func[0].stateless_model.model.visual.named_modules():
+            if isinstance(child, nn.BatchNorm2d):
+                if mode:
+                    child.train()
+                else:
+                    child.eval()
+        return new_self
+     
     def _apply(self, fn, *args, **kwargs):
         """Override method to relocate buffer list
 
@@ -224,7 +237,7 @@ class ImageEncoder_(nn.Module):
         new_self = super()._apply(fn=fn, *args, **kwargs)
         new_self.buffer = tuple(fn(x, *args, **kwargs) for x in new_self.buffer)
         if not self.tv_cpu:
-            new_self.dparams = [[fn(dp, *args, **kwargs) for dp in dparam] for dparam in new_self.dparams]            
+            new_self.dparams = [[fn(dp, *args, **kwargs) for dp in dparam] for dparam in new_self.dparams]
         return new_self
         
     def __call__(self, x, zero_shot=False) -> torch.Tensor:
@@ -237,7 +250,7 @@ class ImageEncoder_(nn.Module):
             dparams = [sum([p.to(c.device, non_blocking=True) * c[i] for p, c in zip(dp, self.coef)]) for i, dp in enumerate(zip(*self.dparams))]
         else:
             dparams = [sum([p.to(c.device, non_blocking=True) * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
-
+            
         new_params = [dp + p for i, (dp, p) in enumerate(zip(dparams, self.params))]
         return self.func(new_params, self.buffer, x)
 
@@ -451,7 +464,7 @@ def train(task_vectors, args):
             torchvision.transforms.RandomHorizontalFlip(p=0.5),
         ] + model.val_preprocess.transforms[-3:])
         
-        #preprocess_fn = model.train_preprocess
+        preprocess_fn = model.train_preprocess
 
     dataset = get_dataset(
         test_dataset,
@@ -460,6 +473,7 @@ def train(task_vectors, args):
         batch_size=args.batch_size,
     )
 
+    
     #Changing the transforms in the val/test dataset
     dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
     if isinstance(dataset, torch.utils.data.dataset.Subset):#Resisc
@@ -513,12 +527,7 @@ def train(task_vectors, args):
         coef = model.image_encoder.coef
         if args.attn:
             coef1 = model.image_encoder.coef1
-
-    if not args.tune_clip and 'RN' not in args.model:
-        model.eval()
-    else:
-        model.train() #Compute batch norm stats
-
+        
     best_acc = 0
     max_ep = args.epochs
     if args.tip_only:
@@ -532,16 +541,18 @@ def train(task_vectors, args):
     batch_time = 0
     epoch = 0
 
-    fabric = Fabric(accelerator="cuda", devices=1, strategy="dp" if "RN" in args.model else "ddp", precision="16-mixed") #dp because of RN buffers apparently cause the coefs to not receive any grads, there may be a better solution
+    fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="16-mixed")
     fabric.launch()
 
     model, optimizer = fabric.setup(model, optimizer)
     data_loader = fabric.setup_dataloaders(data_loader)
 
+    model.eval()
     for epoch in range(max_ep):
         # Evaluate before each epoch
         if args.lr_scheduler=="annealing":
             adjust_lr(optimizer, lrs[epoch], [1, .0001])#Lower lr for clip backbone in case of args.tune_clip
+            
         if True:#is_main_process():
             # We only need to evaluate the model on the first GPU.
             image_encoder = model.image_encoder
@@ -755,7 +766,9 @@ def train(task_vectors, args):
             optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
             model, optimizer = fabric.setup(model, optimizer)
 
-        
+        if args.tune_clip:# or 'RN' in args.model:
+            model.train() #Compute batch norm stats
+
         for i, batch in enumerate(data_loader):
             start_time = time.time()
 
@@ -1211,6 +1224,12 @@ if __name__ == "__main__":
     args.batch_size = 32 if args.model == "ViT-L-14" else 128
     args.num_grad_accumulation = 4 if args.model == "ViT-L-14" else 1
     args.print_every = 10
+
+    if "RN" in args.model:#RN models do not have attention layers. Leaving attn as True will cause a problem with coef1 receiving no gradients.
+        args.attn = False
+
+    if not args.layerwise:
+        args.attn = False
 
     if args.seed is not None and False:
         args.save = f"checkpoints_{args.seed}/{args.model}"

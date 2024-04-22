@@ -66,7 +66,7 @@ class _TaskVector(abc.ABC):
                 vector[key] = vector[key] * (ma - mi) + mi
                 self.vector[key] = (
                     vector[key] - pretrained_state_dict[key]
-                )            
+                )
                         
         elif finetuned_checkpoint is None: #Random tv
             with torch.no_grad():
