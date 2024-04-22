@@ -76,7 +76,7 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
             location=args.data_location,
             batch_size=args.batch_size,
         )
-        
+
     dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
     
     dataloader.shuffle=False
@@ -95,7 +95,10 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
         top1, correct, n = 0.0, 0.0, 0.0
         for _, data in enumerate(tqdm.tqdm(dataloader, disable=args.no_tqdm)):
             data = maybe_dictionarize(data)
-            x = data["images"].to(device)
+            if isinstance(data["images"], list):#Eval with AsymetricAugs
+                x = data["images"][0].to(device)
+            else:
+                x = data["images"].to(device)
             y = data["labels"].to(device)
 
             logits, feats = utils.get_logits(x, model, return_features=True)

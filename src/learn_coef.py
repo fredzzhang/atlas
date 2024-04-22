@@ -37,7 +37,9 @@ import minlora
 @torch.jit.script
 def softmax_entropy(x: torch.Tensor) -> torch.Tensor:
     """Entropy of softmax distribution from logits."""
+    #cond = (x.softmax(1).max(dim=1)[0] < .9)
     return -(x.softmax(1) * x.log_softmax(1)).sum(1)
+    #return (-(x.softmax(1) * x.log_softmax(1)).sum(1) * cond).sum() / cond.sum()
 
 @torch.jit.script
 def cb_softmax_entropy(x: torch.Tensor) -> torch.Tensor:
@@ -347,6 +349,10 @@ def main(rank, args):
             fname = os.path.join(fname, f"fully-supervised")
         elif args.loss_fn == "ssl_simclr_trusted":
             fname = os.path.join(fname, f"self-supervised")
+        elif args.loss_fn == "entropy":
+            fname = os.path.join(fname, f"entropy")
+        elif args.loss_fn == "simclr":
+            fname = os.path.join(fname, f"simclr")
         else:
             raise NotImplementedError("The current setting is not implemented")
 
@@ -420,7 +426,10 @@ def main(rank, args):
 def train(task_vectors, args):
     scaler = torch.cuda.amp.GradScaler()
     #setup_ddp(args.rank, args.world_size, port=args.port)
-    test_dataset = args.test_dataset + 'Val'
+    if args.loss_fn in ["simclr", "ssl_simclr_trusted", "entropy"]:#Test-time adaptations
+        test_dataset = args.test_dataset
+    else:
+        test_dataset = args.test_dataset + 'Val'
     
     assert args.finetuning_mode in [
         "linear",
@@ -447,24 +456,15 @@ def train(task_vectors, args):
     model = ImageClassifier(image_encoder, classification_head)
     model.freeze_head()
     
-    if 'simclr' in args.loss_fn:
+    #Using the TIP augmentations to learn the coeficients but this does not make a huge difference.
+    preprocess_fn = torchvision.transforms.Compose([
+        torchvision.transforms.RandomResizedCrop(size=224, scale=(0.5, 1), interpolation=torchvision.transforms.InterpolationMode.BICUBIC),
+        torchvision.transforms.RandomHorizontalFlip(p=0.5),
+    ] + model.val_preprocess.transforms[-3:])
+    
+    if 'simclr' in args.loss_fn or 'ssl' in args.loss_fn:
         size = 224
-            
-        preprocess_fn = torchvision.transforms.Compose(
-            [torchvision.transforms.Resize(256, antialias=True),
-             torchvision.transforms.RandomCrop(size)] + \
-            model.val_preprocess.transforms[-3:]
-        )
-
         preprocess_fn = TwoAsymetricTransform(model.val_preprocess, preprocess_fn)
-        
-    else: #Using the TIP augmentations to learn the coeficients but this does not make a huge difference.
-        preprocess_fn = torchvision.transforms.Compose([
-            torchvision.transforms.RandomResizedCrop(size=224, scale=(0.5, 1), interpolation=torchvision.transforms.InterpolationMode.BICUBIC),
-            torchvision.transforms.RandomHorizontalFlip(p=0.5),
-        ] + model.val_preprocess.transforms[-3:])
-        
-        preprocess_fn = model.train_preprocess
 
     dataset = get_dataset(
         test_dataset,
@@ -472,18 +472,23 @@ def train(task_vectors, args):
         location=args.data_location,
         batch_size=args.batch_size,
     )
-
     
-    #Changing the transforms in the val/test dataset
-    dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
-    if isinstance(dataset, torch.utils.data.dataset.Subset):#Resisc
-        dataloader.dataset.dataset.transform = model.val_preprocess
-        dataloader.dataset.dataset.transforms = model.val_preprocess
+    if args.loss_fn not in ["simclr", "ssl_simclr_trusted", "entropy"]:
+        #Changing the transforms in the val/test dataset        
+        dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
+        if isinstance(dataset, torch.utils.data.dataset.Subset):#Resisc
+            dataloader.dataset.dataset.transform = model.val_preprocess
+            dataloader.dataset.dataset.transforms = model.val_preprocess
+        else:
+            dataloader.dataset.transform = model.val_preprocess
+            dataloader.dataset.transforms = model.val_preprocess
+        
+    #Wrapping to get index of the samples
+    if args.loss_fn in ["simclr", "ssl_simclr_trusted", "entropy"]:
+        index_dataset = IndexWrapper(dataset.test_dataset) #Test time adapatation (no labels used)
     else:
-        dataloader.dataset.transform = model.val_preprocess
-        dataloader.dataset.transforms = model.val_preprocess
-    
-    index_dataset = IndexWrapper(dataset.train_dataset) #Wrapping to get index of the samples
+        index_dataset = IndexWrapper(dataset.train_dataset)
+        
     data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
 
     # Override shuffle to True
@@ -545,7 +550,7 @@ def train(task_vectors, args):
     fabric.launch()
 
     model, optimizer = fabric.setup(model, optimizer)
-    data_loader = fabric.setup_dataloaders(data_loader)
+    data_loader = fabric.setup_dataloaders(data_loader, use_distributed_sampler=False)
 
     model.eval()
     for epoch in range(max_ep):
@@ -559,7 +564,7 @@ def train(task_vectors, args):
             if epoch == 0:
                 #Accuracy of the Zero-shot on the test set
                 acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, test=True)
-            else:
+            elif args.loss_fn not in ["simclr", "ssl_simclr_trusted", "entropy"]:
                 acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, test=False)
                 
             string = 'Coefficients:\t|'
@@ -578,13 +583,12 @@ def train(task_vectors, args):
                     coefs1 = coef1.data.detach().cpu()
 
             if epoch == 0:
-                base_acc = acc['top1']
-                
+                base_acc = acc['top1']  
                 
             if ('trusted' in args.loss_fn and ((epoch >= 0 and 'entro' not in args.loss_fn) or epoch >= 1)) and not (args.semi and epoch >=1):
-
+                preprocess = data_loader.dataset.update_transforms(image_encoder.val_preprocess)
                 if args.semi:
-                    preprocess = data_loader.dataset.update_transforms(image_encoder.val_preprocess)
+                    
                     targets = - torch.ones(len(data_loader.dataset), dtype=torch.long)
                     preds = - torch.ones(len(data_loader.dataset), dtype=torch.long)
                     with torch.no_grad():
@@ -616,9 +620,7 @@ def train(task_vectors, args):
                     targets = acc['targets']
                     full_preds = acc['full_preds']
                     
-                    k = min(int((len(subset) / classification_head.out_features) / 10), 100)
-                    #k = max(int((len(subset) / classification_head.out_features) / 10), 10)
-                    #k = int((len(subset) / classification_head.out_features) / 10)
+                    k = min(int((len(index_dataset) / classification_head.out_features) / 10), 100)
                     print(k)
                     to_keep = torch.tensor([], dtype=torch.long)
                     unlabeled = torch.tensor([], dtype=torch.long)
@@ -644,7 +646,8 @@ def train(task_vectors, args):
                         
                     unlabeled = torch.tensor([u for u in unlabeled if confs[u] > 0], dtype=torch.long)
                     unlabeled = torch.unique(unlabeled)
-
+                    
+                data_loader.dataset.update_transforms(preprocess)
                 print("Correctness")
                 print((preds[to_keep] == targets[to_keep]).sum() / len(to_keep))
                 print((preds[unlabeled] == targets[unlabeled]).sum() / len(unlabeled))
@@ -665,7 +668,7 @@ def train(task_vectors, args):
                     sampler = torch.utils.data.SubsetRandomSampler(to_keep) 
                     data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=sampler, num_workers=16)                    
                 num_batches = len(data_loader)
-                data_loader = fabric.setup_dataloaders(data_loader)
+                data_loader = fabric.setup_dataloaders(data_loader, use_distributed_sampler=False)
                 
                 if args.tip_only:
                     i = 0
@@ -781,6 +784,7 @@ def train(task_vectors, args):
             
             if 'simclr' in args.loss_fn:
                 inputs2 = batch["images_aug"]
+                
             if 'trusted' in args.loss_fn:
                 ids = batch['index']
 
@@ -810,24 +814,10 @@ def train(task_vectors, args):
                 lam = max(lam, 1-lam)
                 index = torch.randperm(len(inputs2))
                 #inputs2 = lam * inputs2 + (1-lam) * inputs2[index]
-                if epoch == 0 and 'entro' in args.loss_fn:
-                    #logits2, feats2 = model(inputs2, return_features=True)
-                    #loss = simclr_loss(feats, feats2).mean()
-                    loss = softmax_entropy(logits).mean()
-                    #loss = F.cross_entropy(logits, labels.float())
-                    #labels = batch["labels"]
-                    #labels = F.one_hot(labels, num_classes=classification_head.out_features)
-                elif epoch < 2 and False:
-                    logits2 = model(inputs2)
-                    trusted = torch.ones(args.batch_size).bool()
-                    trusted[:args.batch_size//2] = 0 #First half of the batch are untrusted labels
-                    loss = ce_loss_trusted(logits, logits2, preds[ids], trusted)#, lam, index)
-                else:
-                    logits2 = model(inputs2)
-                    trusted = torch.ones(args.batch_size).bool()
-                    trusted[:3*args.batch_size//4] = 0 #First half of the batch are untrusted labels
-                    loss = loss_fn(logits, logits2, preds[ids], trusted, thresh=threshs[epoch])#, lam, index)
-                    #loss = softmax_entropy(logits).mean()
+                logits2 = model(inputs2)
+                trusted = torch.ones(args.batch_size).bool()
+                trusted[:3*args.batch_size//4] = 0 #First half of the batch are untrusted labels
+                loss = loss_fn(logits, logits2, F.one_hot(preds.to(logits.device)[ids], num_classes=classification_head.out_features).float(), trusted, thresh=threshs[epoch])#, lam, index)
 
             elif 'trusted' in args.loss_fn:
                 loss = loss_fn(logits, F.one_hot(preds.to(logits.device)[ids], num_classes=classification_head.out_features).float())
@@ -888,7 +878,10 @@ def train(task_vectors, args):
         # We only need to evaluate the model on the first GPU.
         image_encoder = model.image_encoder
         #with torch.autocast(device_type="cuda"):
-        acc = eval_single_dataset(image_encoder, test_dataset, dataset, args)
+        if args.loss_fn not in ["simclr", "ssl_simclr_trusted", "entropy"]:
+            #No early stopping for test-time adaptation
+            acc = eval_single_dataset(image_encoder, test_dataset, dataset, args)
+            
         string = 'Coefficients:\t|'
         for c in coef.data:
             if args.layerwise:
@@ -971,7 +964,7 @@ def train(task_vectors, args):
                 #optimizer = torch.optim.AdamW([adapter.beta_alpha], lr=0.001, eps=1e-4)
                 
             adapter, optimizer = fabric.setup(adapter, optimizer)
-            data_loader = fabric.setup_dataloaders(data_loader)
+            data_loader = fabric.setup_dataloaders(data_loader, use_distributed_sampler=False)
 
             if not args.lp:
                 adapter.eval()   
@@ -1190,35 +1183,37 @@ if __name__ == "__main__":
         sys.modules['__main__'] = learn_coef  # Ensures pickle lookups on __main__ find matching version
 
     # Epochs w/ lr=1e-2 for entropy objective
+
+    args = parse_arguments()
+
+    epochs = 10
     
     datasets = {
-        "Cars": 10,
-        "DTD": 10,
-        "EuroSAT": 10,
-        "GTSRB": 10,
-        "MNIST": 10,
-        "RESISC45": 10,
-        "SUN397": 10,
-        "SVHN": 10,
-        "CIFAR10": 10,
-        "CIFAR100": 10,        
-        "ImageNet": 10,
-        "STL10": 10,
-        "Food101": 10,
-        "Caltech256": 10,
-        "FGVCAircraft": 10,
-        "Flowers102": 10,
-        "OxfordIIITPet": 10,
-        "CUB200": 10,
-        "PascalVOC": 10,
-        "Country211": 10,
-        "Caltech101": 10,
-        "UCF101": 10,
+        "Cars": epochs,
+        "DTD": epochs,
+        "EuroSAT": epochs,
+        "GTSRB": epochs,
+        "MNIST": epochs,
+        "RESISC45": epochs,
+        "SUN397": epochs,
+        "SVHN": epochs,
+        "CIFAR10": epochs,
+        "CIFAR100": epochs,        
+        "ImageNet": epochs,
+        "STL10": epochs,
+        "Food101": epochs,
+        "Caltech256": epochs,
+        "FGVCAircraft": epochs,
+        "Flowers102": epochs,
+        "OxfordIIITPet": epochs,
+        "CUB200": epochs,
+        "PascalVOC": epochs,
+        "Country211": epochs,
+        "Caltech101": epochs,
+        "UCF101": epochs,
     }
 
-    
-    args = parse_arguments()
-    
+        
     # HACK: Some command line arguments are overwritten by defaults here.
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 32 if args.model == "ViT-L-14" else 128

@@ -1,9 +1,9 @@
 import itertools
 import numpy as np
-from torch.utils.data.sampler import Sampler
+from torch.utils.data.sampler import Sampler, BatchSampler, SubsetRandomSampler
 
 
-class TwoStreamBatchSampler(Sampler):
+class TwoStreamBatchSampler(BatchSampler):
     """Iterate two sets of indices
     An 'epoch' is one iteration through the primary indices.
     During the epoch, the secondary indices are iterated through
