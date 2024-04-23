@@ -169,8 +169,8 @@ class TwoTransform:
     def __init__(self, transform):
         self.transform = transform
 
-    def __call__(self, x):
-        return [self.transform(x), self.transform(x)]
+    def __call__(self, x, *args, **kwargs):
+        return [self.transform(x, *args, **kwargs), self.transform2(x, *args, **kwargs)]
     
 class TwoAsymetricTransform:
     """Create two asymetrics transforms of the same image"""
@@ -178,10 +178,10 @@ class TwoAsymetricTransform:
     def __init__(self, transform, transform2):
         self.transform = transform
         self.transform2 = transform2
-
-    def __call__(self, x):
-        return [self.transform(x), self.transform2(x)]
-    
+ 
+    def __call__(self, x, *args, **kwargs):
+        return [self.transform(x, *args, **kwargs), self.transform2(x, *args, **kwargs)]
+   
 class MetaAdapter(nn.Module):
     def __init__(self, dim=1024, num_heads=1):
         super().__init__()

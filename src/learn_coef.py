@@ -269,18 +269,18 @@ class IndexWrapper(nn.Module):
         while isinstance(dataset, torch.utils.data.dataset.Subset):
             dataset = dataset.dataset
         if hasattr(dataset, "transforms"): #Resisc, oxford pets
-            if isinstance(dataset.transforms, torchvision.datasets.vision.StandardTransform):#oxford pets
+            if isinstance(dataset.transforms, torchvision.datasets.vision.StandardTransform) and not isinstance(new_transform, torchvision.datasets.vision.StandardTransform):#oxford pets
                 new_transform = torchvision.datasets.vision.StandardTransform(new_transform)
             preprocess = dataset.transforms
             dataset.transforms = new_transform
         elif hasattr(dataset, "transform"):
-            if isinstance(dataset.transform, torchvision.datasets.vision.StandardTransform): #oxford pets
+            if isinstance(dataset.transforms, torchvision.datasets.vision.StandardTransform) and not isinstance(new_transform, torchvision.datasets.vision.StandardTransform):#oxford pets
                 new_transform = torchvision.datasets.vision.StandardTransform(new_transform)
             preprocess = dataset.transform
             dataset.transform = new_transform
         else:
             raise AttributeError(f"Can't find transform attribute of dataset {self.dataset}")
-        
+
         return preprocess
     
     def __len__(self):
@@ -779,6 +779,7 @@ def train(task_vectors, args):
                 i // args.num_grad_accumulation
                 + epoch * num_batches // args.num_grad_accumulation
             )
+            
             batch = maybe_dictionarize(batch, index=True)
             inputs = batch["images"]
             
@@ -1210,7 +1211,7 @@ if __name__ == "__main__":
         "PascalVOC": epochs,
         "Country211": epochs,
         "Caltech101": epochs,
-        "UCF101": epochs,
+        "UCF101": epochs
     }
 
         
