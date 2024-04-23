@@ -274,7 +274,7 @@ class IndexWrapper(nn.Module):
             preprocess = dataset.transforms
             dataset.transforms = new_transform
         elif hasattr(dataset, "transform"):
-            if isinstance(dataset.transforms, torchvision.datasets.vision.StandardTransform) and not isinstance(new_transform, torchvision.datasets.vision.StandardTransform):#oxford pets
+            if isinstance(dataset.transform, torchvision.datasets.vision.StandardTransform) and not isinstance(new_transform, torchvision.datasets.vision.StandardTransform):#oxford pets
                 new_transform = torchvision.datasets.vision.StandardTransform(new_transform)
             preprocess = dataset.transform
             dataset.transform = new_transform
@@ -1207,6 +1207,13 @@ if __name__ == "__main__":
         "FGVCAircraft": epochs,
         "Flowers102": epochs,
         "OxfordIIITPet": epochs,
+        "CUB200": epochs,
+        "PascalVOC": epochs,
+        "Country211": epochs,
+        "Caltech101": epochs,
+        "UCF101": epochs
+    }
+    datasets = {
         "CUB200": epochs,
         "PascalVOC": epochs,
         "Country211": epochs,
