@@ -6,6 +6,7 @@ import torch
 import math
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
 
 
 def assign_learning_rate(param_group, new_lr):
@@ -239,3 +240,33 @@ def _select_lora(lora_layer, index):
 def select_lora(model, index):
     model.apply(apply_to_lora(lambda x: _select_lora(x, index)))
     return model
+
+class IndexWrapper(nn.Module):
+    def __init__(self, dataset):
+        super().__init__()
+        self.dataset = dataset
+        
+    def __getitem__(self, index):
+        return self.dataset[index], index
+
+    def update_transforms(self, new_transform):
+        dataset = self.dataset
+        while isinstance(dataset, torch.utils.data.dataset.Subset):
+            dataset = dataset.dataset
+        if hasattr(dataset, "transforms"): #Resisc, oxford pets
+            if isinstance(dataset.transforms, torchvision.datasets.vision.StandardTransform) and not isinstance(new_transform, torchvision.datasets.vision.StandardTransform):#oxford pets
+                new_transform = torchvision.datasets.vision.StandardTransform(new_transform)
+            preprocess = dataset.transforms
+            dataset.transforms = new_transform
+        elif hasattr(dataset, "transform"):
+            if isinstance(dataset.transform, torchvision.datasets.vision.StandardTransform) and not isinstance(new_transform, torchvision.datasets.vision.StandardTransform):#oxford pets
+                new_transform = torchvision.datasets.vision.StandardTransform(new_transform)
+            preprocess = dataset.transform
+            dataset.transform = new_transform
+        else:
+            raise AttributeError(f"Can't find transform attribute of dataset {self.dataset}")
+
+        return preprocess
+    
+    def __len__(self):
+        return len(self.dataset)

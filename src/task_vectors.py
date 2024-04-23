@@ -116,7 +116,11 @@ class _TaskVector(abc.ABC):
                         continue
                     if pretrained_state_dict[key].dtype == torch.uint8:
                         continue
-                    self.vector[key] = (finetuned_state_dict[key] - pretrained_state_dict[key])
+                    
+                    if "visual" not in key:#Avoid loading unused language elements in memory
+                        self.vector[key] = torch.tensor([0.])
+                    else:
+                        self.vector[key] = (finetuned_state_dict[key] - pretrained_state_dict[key])
         if scale:
             for key in pretrained_state_dict:
                 self.vector[key] = self.vector[key] / self.norm()

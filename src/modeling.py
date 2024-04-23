@@ -110,7 +110,7 @@ class ImageClassifier(torch.nn.Module):
         self.classification_head.bias.requires_grad_(False)
 
     def forward(self, inputs, return_features=False, **kwargs):
-        features = self.image_encoder(inputs, **kwargs)
+        features = self.image_encoder(inputs)        
         outputs = self.classification_head(features)
         if return_features:
             return outputs, features

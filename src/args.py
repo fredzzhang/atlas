@@ -223,6 +223,12 @@ def parse_arguments():
         help="Select the best n Tvs from the pool"
     )
     parser.add_argument(
+        "--features",
+        default=False,
+        action="store_true",
+        help="Select TVs based on centroid similarity."
+    )
+    parser.add_argument(
         "--worse",
         default=False,
         action="store_true",

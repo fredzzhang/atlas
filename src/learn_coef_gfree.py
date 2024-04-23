@@ -33,6 +33,7 @@ from tqdm import tqdm
 import copy
 from lightning.fabric import Fabric
 import minlora
+from cmaes import CMA
 
 @torch.jit.script
 def softmax_entropy(x: torch.Tensor) -> torch.Tensor:
@@ -392,7 +393,7 @@ def main(rank, args):
         with open(fname, 'a') as f: f.writelines([f"\nArguments {args}"])
         with open(fname2, 'a') as f: f.writelines([f"\nArguments {args}"])
     
-    
+@torch.no_grad()    
 def train(task_vectors, args):
     scaler = torch.cuda.amp.GradScaler()
     #setup_ddp(args.rank, args.world_size, port=args.port)
@@ -479,23 +480,6 @@ def train(task_vectors, args):
     }[args.loss_fn]
 
     params = [p for p in model.parameters() if p.requires_grad]
-    if args.tune_clip:
-        optimizer = torch.optim.AdamW([{'params': [model.image_encoder.coef] + [model.image_encoder.coef1]}, {'params': model.image_encoder.params}], lr=args.lr, weight_decay=args.wd)
-    else:
-        optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
-    #optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
-    #optimizer = torch.optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=1e-5)
-
-    if args.lr_scheduler=="annealing":
-        lrs = cosine_annealing_lr(args.lr, 0, args.epochs)
-    else:
-        scheduler = cosine_lr(
-            optimizer,
-            args.lr,
-            args.warmup_length,
-            args.epochs * num_batches // args.num_grad_accumulation,
-        )
-
     if args.finetuning_mode == "linear":
         coef = model.image_encoder.model.coef
     else:
@@ -519,15 +503,12 @@ def train(task_vectors, args):
     fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="16-mixed")
     fabric.launch()
 
-    model, optimizer = fabric.setup(model, optimizer)
+    model = fabric.setup_module(model)
     data_loader = fabric.setup_dataloaders(data_loader, use_distributed_sampler=False)
 
     model.eval()
     for epoch in range(max_ep):
-        # Evaluate before each epoch
-        if args.lr_scheduler=="annealing":
-            adjust_lr(optimizer, lrs[epoch], [1, .0001])#Lower lr for clip backbone in case of args.tune_clip
-            
+        # Evaluate before each epoch            
         if True:#is_main_process():
             # We only need to evaluate the model on the first GPU.
             image_encoder = model.image_encoder
@@ -648,106 +629,77 @@ def train(task_vectors, args):
                     continue
 
         if args.select_tvs and epoch == 0:
-            if args.features:
-                print("Selecting best Tvs based on feature similarity")
-                centroids = torch.cat([torch.load(os.path.join(f"{args.save}/{dataset}Val/zeroshot_feats.pt")).unsqueeze(0) for dataset in pool if orig_dataset != dataset], dim=0)
-                
-                for i, batch in enumerate(data_loader):
-                    batch = maybe_dictionarize(batch, index=True)
-                    inputs = batch["images"]
-                    labels = batch["labels"]
-                    features = []
-                    with torch.no_grad():
-                        _, feats = model(inputs, return_features=True)
-                        feats /= feats.norm(1, keepdim=True)
-                        features.append(feats.cpu())
-                        
-                features = torch.cat(features, dim=0)
-                features = features.mean(0, keepdim=True)
-                sims = torch.mm(F.normalize(features, p=2), F.normalize(centroids, p=2).T).mean(dim=0) #Cosine sim
-                #sims = torch.mm(features, centroids.T).mean(dim=0)
-                
-                model = model.module #Fabric stuff
-                if args.worse:
-                    model.image_encoder.update_tvs([task_vectors[i] for i in torch.argsort(sims)[:args.select_tvs]])
-                elif args.random:
-                    model.image_encoder.update_tvs([task_vectors[i] for i in torch.randperm(len(task_vectors))[:args.select_tvs]])
-                else:
-                    model.image_encoder.update_tvs([task_vectors[i] for i in torch.argsort(sims)[-args.select_tvs:]])
-
-                print(f"Highest {args.select_tvs} sims for dataset {test_dataset}: {[pool[i] for i in torch.argsort(sims)[-args.select_tvs:]]}, lowest {[pool[i] for i in torch.argsort(sims)[:args.select_tvs]]}")
-            else:
-                print("Selecting best Tvs based on gradients")
-                if args.mem_eff:
-                    print("Memory efficient selection")
-                    n_tvs = len(task_vectors)
-                    j = 0
-                    grad = torch.zeros(n_tvs, len(coef[0]))
-                    while j*args.select_tvs < n_tvs:
-                        model = model.module #Fabric stuff
-                        model.image_encoder.update_tvs(task_vectors[j*args.select_tvs:(j+1)*args.select_tvs])
-
-                        if args.finetuning_mode == "linear":
-                            coef = model.image_encoder.model.coef
-                        else:
-                            coef = model.image_encoder.coef
-                            if args.attn:
-                                coef1 = model.image_encoder.coef1
-
-                        params = [p for p in model.parameters() if p.requires_grad]    
-                        optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
-                        model, optimizer = fabric.setup(model, optimizer)
-                        for i, batch in enumerate(data_loader):
-                            batch = maybe_dictionarize(batch, index=True)
-                            inputs = batch["images"]
-                            labels = batch["labels"]
-                            logits = model(inputs)
-
-                            loss = F.cross_entropy(logits, labels)
-                            fabric.backward(loss)
-
-                        print(f"Processed {(j+1)*args.select_tvs} out of {n_tvs} task vectors")
-                        grad[j*args.select_tvs:(j+1)*args.select_tvs] = torch.abs(coef.grad.cpu())
-                        j += 1
-                        optimizer.zero_grad()
-                else:
+            print("Selecting best Tvs based on gradients")
+            if args.mem_eff:
+                print("Memory efficient selection")
+                n_tvs = len(task_vectors)
+                j = 0
+                grad = torch.zeros(n_tvs, len(coef[0]))
+                while j*args.select_tvs < n_tvs:
+                    model = model.module #Fabric stuff
+                    model.image_encoder.update_tvs(task_vectors[j*args.select_tvs:(j+1)*args.select_tvs])
+                    
+                    if args.finetuning_mode == "linear":
+                        coef = model.image_encoder.model.coef
+                    else:
+                        coef = model.image_encoder.coef
+                        if args.attn:
+                            coef1 = model.image_encoder.coef1
+                            
+                    params = [p for p in model.parameters() if p.requires_grad]    
+                    optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
+                    model, optimizer = fabric.setup(model, optimizer)
                     for i, batch in enumerate(data_loader):
                         batch = maybe_dictionarize(batch, index=True)
                         inputs = batch["images"]
                         labels = batch["labels"]
                         logits = model(inputs)
-
+                        
                         loss = F.cross_entropy(logits, labels)
                         fabric.backward(loss)
-
-                    grad = torch.abs(coef.grad.cpu())
+                        
+                    print(f"Processed {(j+1)*args.select_tvs} out of {n_tvs} task vectors")
+                    grad[j*args.select_tvs:(j+1)*args.select_tvs] = torch.abs(coef.grad.cpu())
+                    j += 1
                     optimizer.zero_grad()
+            else:
+                for i, batch in enumerate(data_loader):
+                    batch = maybe_dictionarize(batch, index=True)
+                    inputs = batch["images"]
+                    labels = batch["labels"]
+                    logits = model(inputs)
+                    
+                    loss = F.cross_entropy(logits, labels)
+                    fabric.backward(loss)
+                
+                grad = torch.abs(coef.grad.cpu())
+                optimizer.zero_grad()
 
-                if args.blockwise_select:
-                    print("Blockwise selection of the task vectors")
-                    selection = torch.argsort(-grad, dim=0)[:args.select_tvs]
-                    new_tvs = [{} for _ in range(args.select_tvs)]
-                    names = [[pool[s] for s in selection[:, i]] for i in range(len(selection[0]))]
-                    #for n in names:
-                    #    print(f'{n}\n')
-                    for j, k in enumerate(task_vectors[0].vector.keys()):
-                        for i in range(args.select_tvs):
-                            new_tvs[i][k] = task_vectors[selection[i, j]].vector[k]
-
-                    updated_tvs = copy.deepcopy(task_vectors)
+            if args.blockwise_select:
+                print("Blockwise selection of the task vectors")
+                selection = torch.argsort(-grad, dim=0)[:args.select_tvs]
+                new_tvs = [{} for _ in range(args.select_tvs)]
+                names = [[pool[s] for s in selection[:, i]] for i in range(len(selection[0]))]
+                #for n in names:
+                #    print(f'{n}\n')
+                for j, k in enumerate(task_vectors[0].vector.keys()):
                     for i in range(args.select_tvs):
-                        updated_tvs[i].vector = new_tvs[i]
+                        new_tvs[i][k] = task_vectors[selection[i, j]].vector[k]
 
-                    model = model.module #Fabric stuff
-                    model.image_encoder.update_tvs(updated_tvs[:args.select_tvs])
-
-                else:
-                    grad = grad.mean(1)
-
-                    #plt.bar(torch.arange(grad.shape[0]), torch.abs(grad).mean(1))
-                    #print(grad)
-                    print(f"Highest {args.select_tvs} grads for dataset {test_dataset}: {[pool[i] for i in torch.argsort(grad)[-args.select_tvs:]]}, lowest {[pool[i] for i in torch.argsort(grad)[:args.select_tvs]]}")
-                    #plt.show()
+                updated_tvs = copy.deepcopy(task_vectors)
+                for i in range(args.select_tvs):
+                    updated_tvs[i].vector = new_tvs[i]
+                    
+                model = model.module #Fabric stuff
+                model.image_encoder.update_tvs(updated_tvs[:args.select_tvs])
+                
+            else:
+                grad = grad.mean(1)
+                
+                #plt.bar(torch.arange(grad.shape[0]), torch.abs(grad).mean(1))
+                #print(grad)
+                print(f"Highest {args.select_tvs} grads for dataset {test_dataset}: {[pool[i] for i in torch.argsort(grad)[-args.select_tvs:]]}, lowest {[pool[i] for i in torch.argsort(grad)[:args.select_tvs]]}")
+                #plt.show()
 
                 model = model.module #Fabric stuff
                 if args.worse:
@@ -764,13 +716,13 @@ def train(task_vectors, args):
                 if args.attn:
                     coef1 = model.image_encoder.coef1
                     
-            params = [p for p in model.parameters() if p.requires_grad]    
-            optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
-            model, optimizer = fabric.setup(model, optimizer)
-
-        if args.tune_clip:# or 'RN' in args.model:
-            model.train() #Compute batch norm stats
-
+            model = fabric.setup_module(model)
+        if epoch == 0:
+            if args.layerwise:
+                optimizer = CMA(mean=np.zeros(coef.shape[0]*coef.shape[1]), sigma=0.05, lr_adapt=True, bounds=np.array([[-1, 1] for _ in range(coef.shape[0]*coef.shape[1])]), population_size=len(data_loader))
+            else:
+                optimizer = CMA(mean=np.zeros(len(coef)), sigma=0.05, lr_adapt=True, bounds=np.array([[-1, 1] for _ in range(coef.shape[0])]), population_size=len(data_loader))
+        solutions = []
         for i, batch in enumerate(data_loader):
             start_time = time.time()
 
@@ -789,6 +741,10 @@ def train(task_vectors, args):
                 ids = batch['index']
 
             data_time = time.time() - start_time
+
+            new_coef = optimizer.ask()
+            new_coef = new_coef.reshape(coef.shape)
+            model.image_encoder.coef.data = torch.from_numpy(new_coef).to(model.image_encoder.coef.data)
 
             if 'mixup' in args.loss_fn:
                 lam = np.random.beta(1, 1)
@@ -842,17 +798,8 @@ def train(task_vectors, args):
             if args.l1:
                 loss += l1_reg(model.image_encoder.coef)
 
-            fabric.backward(loss)            
-            #loss.backward()
-
-            if (i + 1) % args.num_grad_accumulation == 0:
-                if not args.lr_scheduler=="annealing":
-                    scheduler(step)
-
-                torch.nn.utils.clip_grad_norm_(params, 1.0)
-                optimizer.step()
-                optimizer.zero_grad()
-
+            solutions.append((new_coef.reshape(-1), loss.cpu().numpy()))
+            
             batch_time = time.time() - start_time
 
             if (
@@ -863,10 +810,11 @@ def train(task_vectors, args):
                 percent_complete = 100 * (i + 1) / len(data_loader)
                 print(
                     f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(data_loader)}]\t"  # noqa: E501
-                    f"Loss: {loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}\tLr {optimizer.param_groups[0]['lr']:.3f}",  # noqa: E501
+                    f"Loss: {loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}\t",  # noqa: E501
                     flush=True,
                 )
 
+        optimizer.tell(solutions)
     percent_complete = 100 * (i + 1) / len(data_loader)
     print(
         f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(dataset.test_loader)}]\t"  # noqa: E501
@@ -878,6 +826,9 @@ def train(task_vectors, args):
         # We only need to evaluate the model on the first GPU.
         image_encoder = model.image_encoder
         #with torch.autocast(device_type="cuda"):
+        new_coef = optimizer.ask()
+        new_coef = new_coef.reshape(coef.shape)
+        image_encoder.coef.data = torch.from_numpy(new_coef).to(image_encoder.coef.data)
         if args.loss_fn not in ["simclr", "ssl_simclr_trusted", "entropy"]:
             #No early stopping for test-time adaptation
             acc = eval_single_dataset(image_encoder, test_dataset, dataset, args)
@@ -1213,7 +1164,7 @@ if __name__ == "__main__":
         "UCF101": epochs
     }
 
-    
+        
     # HACK: Some command line arguments are overwritten by defaults here.
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 32 if args.model == "ViT-L-14" else 128

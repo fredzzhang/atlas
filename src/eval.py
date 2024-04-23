@@ -99,6 +99,7 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
                 x = data["images"][0].to(device)
             else:
                 x = data["images"].to(device)
+                
             y = data["labels"].to(device)
 
             logits, feats = utils.get_logits(x, model, return_features=True)
@@ -154,14 +155,27 @@ def eval_single_train_dataset(image_encoder, dataset_name, dataloader, args):
     model.to(args.device)
     model.eval()
 
+    if dataloader is None:
+        dataset = get_dataset(
+            dataset_name,
+            model.val_preprocess,
+            location=args.data_location,
+            batch_size=args.batch_size,
+        )
+        
+        index_dataset = utils.IndexWrapper(dataset.train_dataset)        
+        dataloader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=False, num_workers=16)
+    else:
+        preprocess = dataloader.dataset.update_transforms(image_encoder.val_preprocess)
+        
     device = args.device
 
     confs = torch.zeros(len(dataloader.dataset))
     preds = torch.zeros(len(dataloader.dataset)).long()
     targets = torch.zeros(len(dataloader.dataset)).long()
     full_preds = torch.zeros((len(dataloader.dataset), classification_head.out_features))
-
-    preprocess = dataloader.dataset.update_transforms(image_encoder.val_preprocess)
+    indexes = - torch.ones(len(dataloader.dataset)).long()
+    features = []
 
     with torch.no_grad():
         top1, correct, n = 0.0, 0.0, 0.0
@@ -171,10 +185,13 @@ def eval_single_train_dataset(image_encoder, dataset_name, dataloader, args):
             y = data["labels"].to(device)
             ids = data["index"]
 
-            logits = utils.get_logits(x, model)
+            logits, feats = utils.get_logits(x, model, return_features=True)
+            feats /= feats.norm(dim=-1, keepdim=True)
             full_preds[ids] = logits.softmax(1).cpu()
             conf, _ = logits.softmax(1).max(1)            
             confs[ids] = conf.cpu()
+            indexes[ids] = ids.cpu()
+            features.append(feats.cpu())
 
             pred = logits.argmax(dim=1, keepdim=True).to(device)
             preds[ids] = pred.cpu().flatten()
@@ -186,9 +203,12 @@ def eval_single_train_dataset(image_encoder, dataset_name, dataloader, args):
 
             top1 = correct / n
 
-    metrics = {"top1": top1, "conf":confs, "preds":preds, "targets":targets, "full_preds":full_preds}
-
-    dataloader.dataset.update_transforms(preprocess)
+    features = torch.cat(features, dim=0)
+    features = features[torch.argsort(indexes)]
+    metrics = {"top1": top1, "conf":confs, "preds":preds, "targets":targets, "full_preds":full_preds, "features":features}
+    
+    try:dataloader.dataset.update_transforms(preprocess)
+    except:print(f"Tried to restore training transforms but failed")
     
     return metrics
 
