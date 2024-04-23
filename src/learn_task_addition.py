@@ -165,7 +165,7 @@ def main(rank, args):
             data_time = time.time() - start_time
             
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                logits = ddp_model(inputs, [int(args.batch_size / n_datasets)] * n_datasets)
+                logits = ddp_model(inputs, [int(args.batch_size / n_datasets / args.world_size)] * n_datasets)
                 labels = [batch["labels"].cuda(),] + [r_batch["labels"].cuda() for r_batch in rmng_batch]
                 all_losses = [loss_fn(x, y) for x, y in zip(logits, labels)]
                 loss = sum(all_losses)
@@ -268,7 +268,7 @@ if __name__ == "__main__":
     args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
     args.print_every = 10
     args.datasets = datasets
-    args.epoch = 20
+    args.epoch = 30
     if args.seed is not None:
         args.save = f"checkpoints_{args.seed}/{args.model}"
     else:

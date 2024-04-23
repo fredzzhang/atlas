@@ -166,7 +166,7 @@ def main(rank, args):
             data_time = time.time() - start_time
             
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                logits = ddp_model(inputs, [int(args.batch_size / 2)] * 2)
+                logits = ddp_model(inputs, [int(args.batch_size / 2 / args.world_size)] * 2)
                 labels = [batch["labels"].cuda(), ctr_batch["labels"].cuda()]
                 loss_tgt, loss_ctr = [loss_fn(x, y) for x, y in zip(logits, labels)]
                 """Gradient ascent on the target dataset,
