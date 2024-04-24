@@ -1083,10 +1083,6 @@ if __name__ == "__main__":
         "UCF101": epochs
     }
 
-
-    datasets = {
-        "EuroSAT": epochs,
-    }
     # HACK: Some command line arguments are overwritten by defaults here.
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 32 if args.model == "ViT-L-14" else 128
