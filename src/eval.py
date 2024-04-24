@@ -21,6 +21,7 @@ from src.heads import get_classification_head
 from src.linearize import LinearizedImageEncoder
 from src.modeling import ImageClassifier
 
+
 def get_val_features(image_encoder, dataset_name, dataset, args):
     # Build the classification head with all classes, when the dataset only has one.
     if '_' in dataset_name:
@@ -66,7 +67,7 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
     model = ImageClassifier(image_encoder, classification_head)
 
     model.eval()
-    model.to(args.device)
+    #model.to(args.device)
 
     if test:
         print("Loading test set")
@@ -78,7 +79,8 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
         )
 
     dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
-    
+
+    model, dataloader = args.fabric.setup_module(model), args.fabric.setup_dataloaders(dataloader)
     dataloader.shuffle=False
     device = args.device
 
@@ -96,12 +98,12 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
         for _, data in enumerate(tqdm.tqdm(dataloader, disable=args.no_tqdm)):
             data = maybe_dictionarize(data)
             if isinstance(data["images"], list):#Eval with AsymetricAugs
-                x = data["images"][0].to(device)
+                x = data["images"][0]
             else:
-                x = data["images"].to(device)
+                x = data["images"]
                 
-            y = data["labels"].to(device)
-
+            y = data["labels"]
+                
             logits, feats = utils.get_logits(x, model, return_features=True)
             feats /= feats.norm(dim=-1, keepdim=True)
             

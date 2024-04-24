@@ -31,12 +31,13 @@ class LinearizedModel(nn.Module):
             init_model = model
 
         func0, params0, self.buffers0 = make_functional_with_buffers(
-            init_model.eval(), disable_autograd_tracking=True
+            init_model.eval().half(), disable_autograd_tracking=True
         )
-        self.func0 = lambda params, x: func0(params, self.buffers0, x)
+        
+        self.func0 = lambda params, buffers, x: func0(params, buffers, x)
 
         _, params, _ = make_functional_with_buffers(
-            model, disable_autograd_tracking=True
+            model.half(), disable_autograd_tracking=True
         )
 
         self.params = nn.ParameterList(params)
@@ -125,7 +126,7 @@ class LinearizedImageEncoder(abc.ABC, nn.Module):
         Returns:
             LinearizedImageEncoder: The loaded taylorized image encoder.
         """
-        print(f"Loading image encoder from {filename}")
+        #print(f"Loading image encoder from {filename}")
         state_dict = torch.load(filename, map_location="cpu")
 
         # ImageEncoder expects a DotDict

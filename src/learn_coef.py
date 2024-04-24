@@ -118,13 +118,14 @@ def simclr_mixup_loss(logits1: torch.Tensor, logits2: torch.Tensor, lam:float, i
 def main(rank, args):
 
     # Load the individual task vectors.
-    pool = [
+    pool = [ 
         "Cars", "DTD", "EuroSAT", "GTSRB",
         "MNIST", "RESISC45", "SUN397", "SVHN", "CIFAR10",
         "CIFAR100", "ImageNet", "STL10", "Food101", "Caltech256",
         "FGVCAircraft", "Flowers102", "OxfordIIITPet", "CUB200",
         "PascalVOC", "Country211", "Caltech101", "UCF101"
     ]
+    
     VIT_B_32_hugg= ['laion400m_e31', 'laion400m_e32', 'laion2b_e16', 'laion2b_s34b_b79k', 'datacomp_xl_s13b_b90k', 'datacomp_m_s128m_b4k', 'commonpool_m_clip_s128m_b4k', 'commonpool_m_laion_s128m_b4k', 'commonpool_m_image_s128m_b4k', 'commonpool_m_text_s128m_b4k', 'commonpool_m_basic_s128m_b4k', 'commonpool_m_s128m_b4k', 'datacomp_s_s13m_b4k', 'commonpool_s_clip_s13m_b4k', 'commonpool_s_laion_s13m_b4k', 'commonpool_s_image_s13m_b4k', 'commonpool_s_text_s13m_b4k', 'commonpool_s_basic_s13m_b4k',  'commonpool_s_s13m_b4k'] #'openai' (zero-shot base)
     
     if args.add_random_tv is not None:
@@ -275,7 +276,7 @@ def train(task_vectors, args):
 
     if args.finetuning_mode == "linear":
         image_encoder = LinearizedImageEncoder(args, keep_lang=False)
-        image_encoder.model = LinearizedModel_(image_encoder.model, task_vectors, device=args.rank)
+        image_encoder.model = LinearizedModel_(image_encoder.model, task_vectors, args)
     else:
         image_encoder = ImageEncoder(args)
         image_encoder = ImageEncoder_(image_encoder, task_vectors, args)
@@ -294,7 +295,7 @@ def train(task_vectors, args):
     if 'simclr' in args.loss_fn or 'ssl' in args.loss_fn:
         size = 224
         preprocess_fn = TwoAsymetricTransform(model.val_preprocess, preprocess_fn)
-
+    
     dataset = get_dataset(
         test_dataset,
         preprocess_fn,
@@ -361,7 +362,6 @@ def train(task_vectors, args):
         coef = model.image_encoder.coef
         if args.attn:
             coef1 = model.image_encoder.coef1
-        
     best_acc = 0
     max_ep = args.epochs
     if args.tip_only:
@@ -377,6 +377,7 @@ def train(task_vectors, args):
 
     fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="16-mixed")
     fabric.launch()
+    args.fabric = fabric
 
     model, optimizer = fabric.setup(model, optimizer)
     data_loader = fabric.setup_dataloaders(data_loader, use_distributed_sampler=False)
@@ -986,9 +987,15 @@ def train(task_vectors, args):
                             best_alpha = alpha_vec.cpu().clone()
 
     #Load best coefs
-    model.image_encoder.coef.data = coefs
-    if args.attn:
-        model.image_encoder.coef1.data = coefs1
+    if args.finetuning_mode == "linear":
+        model.image_encoder.model.coef.data = coefs
+        if args.attn:
+            model.image_encoder.model.coef1.data = coefs1
+    
+    else:
+        model.image_encoder.coef.data = coefs
+        if args.attn:
+            model.image_encoder.coef1.data = coefs1
     
     if args.tip_ft:
         if args.lp:
@@ -1011,8 +1018,12 @@ def train(task_vectors, args):
     best_acc = acc['top1']
     if args.epochs == 0:
         base_acc = acc['top1']
-         
-    del image_encoder.dparams # Manual delete of the .cuda() task vectors. Because of the list of list, these are not detected as parameters of the ImageEncoder_ module and are not automatically deleted with image_encoder. To improve
+
+    # Manual delete of the .cuda() task vectors. Because of the list of list, these are not detected as parameters of the ImageEncoder_ module and are not automatically deleted with image_encoder. To improve
+    if args.finetuning_mode == "linear":
+        del image_encoder.model.dparams 
+    else:
+        del image_encoder.dparams 
     if args.blockwise_select:
         del updated_tvs
         
@@ -1072,7 +1083,10 @@ if __name__ == "__main__":
         "UCF101": epochs
     }
 
-    
+
+    datasets = {
+        "EuroSAT": epochs,
+    }
     # HACK: Some command line arguments are overwritten by defaults here.
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 32 if args.model == "ViT-L-14" else 128

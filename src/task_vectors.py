@@ -117,7 +117,7 @@ class _TaskVector(abc.ABC):
                     if pretrained_state_dict[key].dtype == torch.uint8:
                         continue
                     
-                    if "visual" not in key:#Avoid loading unused language elements in memory
+                    if "visual" not in key and False:#Avoid loading unused language elements in memory, not compatible with the linear task vectors
                         self.vector[key] = torch.tensor([0.])
                     else:
                         self.vector[key] = (finetuned_state_dict[key] - pretrained_state_dict[key])
