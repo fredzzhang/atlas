@@ -233,8 +233,7 @@ class NonLinearTaskVector(_TaskVector):
 
     def _load_checkpoint(self, checkpoint):
         """Load a checkpoint into a model."""
-        return torch.load(checkpoint, map_location="cpu")
-    
+        return torch.load(checkpoint, map_location="cpu")    
 
     def apply_to_nonlinear(self, pretrained_nonlinear_checkpoint, scaling_coef=1.0):
         """Apply a task vector to a nonlinear pretrained model."""
