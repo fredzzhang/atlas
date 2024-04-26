@@ -44,6 +44,16 @@ class LinearizedModel(nn.Module):
         self.params0 = nn.ParameterList(params0)
         self._model_name = model.__class__.__name__
 
+        self.names = []
+        self.attn_l = []
+        self.n =0
+        for i, (name, _) in enumerate(model.named_parameters()):
+            self.names.append(name)
+            if 'attn.in_proj' in name:
+                self.attn_l.append(i)
+                self.n+=1
+
+
         # The intial parameters are not trainable.
         for p in self.params0:
             p.requires_grad = False

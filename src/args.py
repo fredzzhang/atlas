@@ -79,6 +79,11 @@ def parse_arguments():
         default=128,
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+    )
+    parser.add_argument(
         "--num-grad-accumulation",
         type=int,
         default=1,

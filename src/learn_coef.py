@@ -29,8 +29,13 @@ from src.sampler import TwoStreamBatchSampler, SubsetSampler
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import copy
-from lightning.fabric import Fabric
+from lightning.fabric import Fabric, seed_everything
 import minlora
+import gc
+
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
+
 
 @torch.jit.script
 def softmax_entropy(x: torch.Tensor) -> torch.Tensor:
@@ -118,13 +123,15 @@ def simclr_mixup_loss(logits1: torch.Tensor, logits2: torch.Tensor, lam:float, i
 def main(rank, args):
 
     # Load the individual task vectors.
-    pool = [ 
+    pool = [ "Cars", "DTD", "EuroSAT", "GTSRB",
         "Cars", "DTD", "EuroSAT", "GTSRB",
         "MNIST", "RESISC45", "SUN397", "SVHN", "CIFAR10",
         "CIFAR100", "ImageNet", "STL10", "Food101", "Caltech256",
         "FGVCAircraft", "Flowers102", "OxfordIIITPet", "CUB200",
         "PascalVOC", "Country211", "Caltech101", "UCF101"
     ]
+
+
     
     VIT_B_32_hugg= ['laion400m_e31', 'laion400m_e32', 'laion2b_e16', 'laion2b_s34b_b79k', 'datacomp_xl_s13b_b90k', 'datacomp_m_s128m_b4k', 'commonpool_m_clip_s128m_b4k', 'commonpool_m_laion_s128m_b4k', 'commonpool_m_image_s128m_b4k', 'commonpool_m_text_s128m_b4k', 'commonpool_m_basic_s128m_b4k', 'commonpool_m_s128m_b4k', 'datacomp_s_s13m_b4k', 'commonpool_s_clip_s13m_b4k', 'commonpool_s_laion_s13m_b4k', 'commonpool_s_image_s13m_b4k', 'commonpool_s_text_s13m_b4k', 'commonpool_s_basic_s13m_b4k',  'commonpool_s_s13m_b4k'] #'openai' (zero-shot base)
     
@@ -160,7 +167,6 @@ def main(rank, args):
             finetuned_checkpoint = f"{args.save}/{dataset}Val/finetuned.pt"
             task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint, scale=args.scale)
 
-
     args.rank = rank
     fname = f"results/{args.model}/"
     if args.fname is not None:
@@ -188,7 +194,7 @@ def main(rank, args):
 
         if args.tip_ft:
             if args.tip_cot:
-                fname = os.path.join(fname, "tv-lp-cot" if args.lp else "tv-tip-cot")                
+                fname = os.path.join(fname, "tv-lp-cot" if args.lp else "tv-tip-cot")
             elif args.tip_only:
                 fname = os.path.join(fname, "lp" if args.lp else "tip")
             else:
@@ -230,7 +236,7 @@ def main(rank, args):
         print("=" * 100)
         print(f"Finetuning task vector coefficients of {args.model} on {dataset}")
         print("=" * 100)
-
+        
         base_acc, best_acc, best_epoch, best_coef, acc = train(task_vectors, args)
 
         coef_dict[dataset] = {'coefs': acc["coefs"], 'preds':acc["softmax"], 'targets':acc["targets"]}
@@ -252,10 +258,7 @@ def main(rank, args):
         with open(fname, 'a') as f: f.writelines([f"\nArguments {args}"])
         with open(fname2, 'a') as f: f.writelines([f"\nArguments {args}"])
     
-    
 def train(task_vectors, args):
-    scaler = torch.cuda.amp.GradScaler()
-    #setup_ddp(args.rank, args.world_size, port=args.port)
     if args.loss_fn in ["simclr", "ssl_simclr_trusted", "entropy"]:#Test-time adaptations
         test_dataset = args.test_dataset
     else:
@@ -274,17 +277,22 @@ def train(task_vectors, args):
     pool = [k for k, v in task_vectors.items() if orig_dataset != k]
     task_vectors = [v for k, v in task_vectors.items() if orig_dataset != k]
 
-    if args.finetuning_mode == "linear":
-        image_encoder = LinearizedImageEncoder(args, keep_lang=False)
-        image_encoder.model = LinearizedModel_(image_encoder.model, task_vectors, args)
-    else:
-        image_encoder = ImageEncoder(args)
-        image_encoder = ImageEncoder_(image_encoder, task_vectors, args)
-
+    fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="16-mixed")
+    fabric.launch()
+    args.fabric = fabric
     
-    classification_head = get_classification_head(args, test_dataset)
-    model = ImageClassifier(image_encoder, classification_head)
-    model.freeze_head()
+    with fabric.init_module():
+        if args.finetuning_mode == "linear":
+            image_encoder = LinearizedImageEncoder(args, keep_lang=False)
+            image_encoder.model = LinearizedModel_(image_encoder.model, task_vectors, args)
+        else:
+            image_encoder = ImageEncoder(args)
+            image_encoder = ImageEncoder_(image_encoder, task_vectors, args)
+        
+    
+        classification_head = get_classification_head(args, test_dataset)
+        model = ImageClassifier(image_encoder, classification_head)        
+        model.freeze_head()
     
     #Using the TIP augmentations to learn the coeficients but this does not make a huge difference.
     preprocess_fn = torchvision.transforms.Compose([
@@ -319,7 +327,7 @@ def train(task_vectors, args):
     else:
         index_dataset = IndexWrapper(dataset.train_dataset)
         
-    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
+    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
 
     # Override shuffle to True
     data_loader.shuffle = True
@@ -356,12 +364,6 @@ def train(task_vectors, args):
             args.epochs * num_batches // args.num_grad_accumulation,
         )
 
-    if args.finetuning_mode == "linear":
-        coef = model.image_encoder.model.coef
-    else:
-        coef = model.image_encoder.coef
-        if args.attn:
-            coef1 = model.image_encoder.coef1
     best_acc = 0
     max_ep = args.epochs
     if args.tip_only:
@@ -374,29 +376,41 @@ def train(task_vectors, args):
     data_time = 0
     batch_time = 0
     epoch = 0
-
-    fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="16-mixed")
-    fabric.launch()
-    args.fabric = fabric
-
+    
+    
+    #Calling fabric.setup() causes a repetitive memory increase with each new call for new datasets. Once the GPU reaches max memory, a flush happens somewhere to free up everything. Then the cycle starts again. gc.collect();torch.cuda.empty_cache() prevents the increase in case you wish to run multiple processes on the same GPU.
+    gc.collect();torch.cuda.empty_cache()
     model, optimizer = fabric.setup(model, optimizer)
+    
     data_loader = fabric.setup_dataloaders(data_loader, use_distributed_sampler=False)
+
+    if args.finetuning_mode == "linear":
+        coef = model.module.image_encoder.model.coef
+        if args.attn:
+            coef1 = model.module.image_encoder.model.coef1
+    else:
+        coef = model.module.image_encoder.coef
+        if args.attn:
+            coef1 = model.module.image_encoder.coef1
+
 
     model.eval()
     for epoch in range(max_ep):
+
         # Evaluate before each epoch
         if args.lr_scheduler=="annealing":
             adjust_lr(optimizer, lrs[epoch], [1, .0001])#Lower lr for clip backbone in case of args.tune_clip
             
         if True:#is_main_process():
             # We only need to evaluate the model on the first GPU.
-            image_encoder = model.image_encoder
+            image_encoder = model.module.image_encoder
+            
             if epoch == 0:
                 #Accuracy of the Zero-shot on the test set
                 acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, test=True)
             elif args.loss_fn not in ["simclr", "ssl_simclr_trusted", "entropy"]:
                 acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, test=False)
-                
+            
             string = 'Coefficients:\t|'
             for c in coef.data:
                 if args.layerwise:
@@ -413,7 +427,7 @@ def train(task_vectors, args):
                     coefs1 = coef1.data.detach().cpu()
 
             if epoch == 0:
-                base_acc = acc['top1']  
+                base_acc = acc['top1']
                 
             if ('trusted' in args.loss_fn and ((epoch >= 0 and 'entro' not in args.loss_fn) or epoch >= 1)) and not (args.semi and epoch >=1):
                 preprocess = data_loader.dataset.update_transforms(image_encoder.val_preprocess)
@@ -486,7 +500,7 @@ def train(task_vectors, args):
                     low_confs = torch.arange(len(data_loader.dataset))[unlabeled]
                     print(f"Got {len(to_keep)} trusted and {len(unlabeled)} untrusted samples")
                     sampler = TwoStreamBatchSampler(low_confs, to_keep, args.batch_size)
-                    data_loader = torch.utils.data.DataLoader(index_dataset, batch_sampler=sampler, num_workers=16)
+                    data_loader = torch.utils.data.DataLoader(index_dataset, batch_sampler=sampler, num_workers=args.workers)
                 else:
                     print(f"Got {len(to_keep)} trusted samples")
                     r = len(to_keep) / args.batch_size
@@ -496,7 +510,7 @@ def train(task_vectors, args):
                         print(f"Oversampling {over_sampling} times")
                         to_keep = torch.cat([to_keep] * over_sampling)
                     sampler = torch.utils.data.SubsetRandomSampler(to_keep) 
-                    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=sampler, num_workers=16)                    
+                    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=sampler, num_workers=args.workers)                    
                 num_batches = len(data_loader)
                 data_loader = fabric.setup_dataloaders(data_loader, use_distributed_sampler=False)
                 
@@ -703,7 +717,6 @@ def train(task_vectors, args):
                 loss += l1_reg(model.image_encoder.coef)
 
             fabric.backward(loss)            
-            #loss.backward()
 
             if (i + 1) % args.num_grad_accumulation == 0:
                 if not args.lr_scheduler=="annealing":
@@ -736,7 +749,7 @@ def train(task_vectors, args):
     
     if True:# is_main_process():
         # We only need to evaluate the model on the first GPU.
-        image_encoder = model.image_encoder
+        image_encoder = model.module.image_encoder
         #with torch.autocast(device_type="cuda"):
         if args.loss_fn not in ["simclr", "ssl_simclr_trusted", "entropy"]:
             #No early stopping for test-time adaptation
@@ -760,16 +773,12 @@ def train(task_vectors, args):
         print(string)
 
         if args.tip_ft:
-            #Load best coefs            
-            #model.image_encoder.coef.requires_grad = False
-            #if args.attn:
-            #    model.image_encoder.coef1.requires_grad = False
-            image_encoder = model.image_encoder
+            image_encoder = model.module.image_encoder
             with torch.no_grad():
                 to_keep_u = torch.unique(to_keep)
                 to_keep_u.sort()
                 subset_t = SubsetSampler(to_keep_u)
-                data_loader_t = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=subset_t, num_workers=16)
+                data_loader_t = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=subset_t, num_workers=args.workers)
 
                 aug_n = 1
                 tbar = tqdm(range(aug_n), disable=args.no_tqdm)
@@ -808,9 +817,9 @@ def train(task_vectors, args):
                 best_alpha = alpha_vec.cpu().clone()
 
             if 'ssl' in args.loss_fn:
-                data_loader = torch.utils.data.DataLoader(index_dataset, batch_sampler=sampler, num_workers=16)
+                data_loader = torch.utils.data.DataLoader(index_dataset, batch_sampler=sampler, num_workers=args.workers)
             else:
-                data_loader = torch.utils.data.DataLoader(index_dataset, sampler=sampler, num_workers=16, batch_size=args.batch_size)
+                data_loader = torch.utils.data.DataLoader(index_dataset, sampler=sampler, num_workers=args.workers, batch_size=args.batch_size)
                 
             if args.lp:
                 if args.tip_cot:
@@ -988,14 +997,14 @@ def train(task_vectors, args):
 
     #Load best coefs
     if args.finetuning_mode == "linear":
-        model.image_encoder.model.coef.data = coefs
+        model.image_encoder.model.coef.data = coefs.to(model.image_encoder.model.coef.data)
         if args.attn:
-            model.image_encoder.model.coef1.data = coefs1
+            model.image_encoder.model.coef1.data = coefs1.to(model.image_encoder.model.coef.data)
     
     else:
-        model.image_encoder.coef.data = coefs
+        model.image_encoder.coef.data = coefs.to(model.image_encoder.coef.data)
         if args.attn:
-            model.image_encoder.coef1.data = coefs1
+            model.image_encoder.coef1.data = coefs1.to(model.image_encoder.coef.data)
     
     if args.tip_ft:
         if args.lp:
@@ -1018,28 +1027,18 @@ def train(task_vectors, args):
     best_acc = acc['top1']
     if args.epochs == 0:
         base_acc = acc['top1']
-
-    # Manual delete of the .cuda() task vectors. Because of the list of list, these are not detected as parameters of the ImageEncoder_ module and are not automatically deleted with image_encoder. To improve
-    if args.finetuning_mode == "linear":
-        del image_encoder.model.dparams 
-    else:
-        del image_encoder.dparams 
-    if args.blockwise_select:
-        del updated_tvs
         
     if not args.tip_ft and not args.tip_cot or args.lp:
         beta_alpha = (0, 0)
     else:
         beta_alpha = adapter.beta_alpha.detach().cpu()
-    if (args.tip_ft or args.tip_cot) and not args.lp:
-        del adapter
 
     acc['coefs'] = coefs
     if args.attn:
         acc['coefs'] = (coefs, coefs1)
      
     acc["beta_alpha"] = beta_alpha
-            
+
     return base_acc, best_acc, best_epoch, best_coefs, acc
     
 if __name__ == "__main__":
@@ -1112,7 +1111,5 @@ if __name__ == "__main__":
     args.datasets = datasets
     #torch.multiprocessing.spawn(main, args=(args,), nprocs=args.world_size)
     seed = int(torch.exp(torch.tensor(args.seed)) * 3.1415 * 1000)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)    
+    seed_everything(seed)
     main(0, args)

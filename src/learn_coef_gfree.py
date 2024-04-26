@@ -265,7 +265,7 @@ def train(task_vectors, args):
     
     index_dataset = IndexWrapper(dataset.train_dataset)
         
-    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
+    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
     num_batches = len(data_loader)
     loss_fn = {
         'cross_entropy': torch.nn.CrossEntropyLoss(),
@@ -358,7 +358,7 @@ def train(task_vectors, args):
                 print(f"Oversampling {over_sampling} times")
                 to_keep = torch.cat([to_keep] * over_sampling)
             sampler = torch.utils.data.SubsetRandomSampler(to_keep) 
-            data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=sampler, num_workers=16)                    
+            data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=sampler, num_workers=args.workers)                    
             num_batches = len(data_loader)
             data_loader = fabric.setup_dataloaders(data_loader, use_distributed_sampler=False)
 

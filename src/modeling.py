@@ -79,7 +79,6 @@ class ClassificationHead(nn.Linear):
     def forward(self, inputs):
         if self.normalize:
             inputs = inputs / inputs.norm(dim=-1, keepdim=True)
-        self.to(inputs.device)
         return super().forward(inputs)
 
     def __call__(self, inputs):
@@ -178,14 +177,9 @@ class LinearizedModel_(nn.Module):
 
         self.dparams = dparams
         
-        self.attn_l = []
-        n = 0
-        self.names = []
-        for i, (name, _) in enumerate(model.named_parameters()):
-            self.names.append(name)
-            if 'attn.in_proj' in name:
-                self.attn_l.append(i)
-                n+=1
+        self.attn_l = model.attn_l
+        self.n = model.n
+        self.names = model.names
                 
         self.attn = args.attn
         self.layerwise = args.layerwise
@@ -195,8 +189,9 @@ class LinearizedModel_(nn.Module):
         self.tv_cpu = args.tv_cpu
         
     def update_tvs(self, task_vectors):
-        if hasattr(self, "dparams"):            
+        if hasattr(self, "dparams"):
             del self.dparams
+            
         dparams = []
         for tv in task_vectors:
             dp = [tv.vector[k] for k in tv.vector if k.startswith('model.params.')]
@@ -249,6 +244,11 @@ class LinearizedModel_(nn.Module):
             (tuple(dparams),),
         )
         return out + dp
+
+        def __del_(self):
+            # Manual delete of the reference to task vectors. To improve
+            del self.dparams
+            del self
         
 class ImageEncoder_(nn.Module):
     def __init__(self, model, task_vectors, args) -> None:
@@ -295,6 +295,7 @@ class ImageEncoder_(nn.Module):
     def update_tvs(self, task_vectors):
         if hasattr(self, "dparams"):            
             del self.dparams
+            
         dparams = []
         for tv in task_vectors:
             dp = [tv.vector[k] for k in self.names]
@@ -353,3 +354,11 @@ class ImageEncoder_(nn.Module):
             
         new_params = [dp + p for i, (dp, p) in enumerate(zip(dparams, self.params))]
         return self.func(new_params, self.buffer, x)
+
+    def __del_(self):
+        # Manual delete of the reference to task vectors. Causes a memory leak otherwise.
+        del self.dparams
+        del self.buffer
+        del self.base_func
+        del self
+

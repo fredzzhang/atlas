@@ -21,7 +21,6 @@ from src.heads import get_classification_head
 from src.linearize import LinearizedImageEncoder
 from src.modeling import ImageClassifier
 
-
 def get_val_features(image_encoder, dataset_name, dataset, args):
     # Build the classification head with all classes, when the dataset only has one.
     if '_' in dataset_name:
@@ -67,8 +66,7 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
     model = ImageClassifier(image_encoder, classification_head)
 
     model.eval()
-    #model.to(args.device)
-
+    
     if test:
         print("Loading test set")
         dataset = get_dataset(
@@ -77,22 +75,19 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
             location=args.data_location,
             batch_size=args.batch_size,
         )
-
     dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
 
-    model, dataloader = args.fabric.setup_module(model), args.fabric.setup_dataloaders(dataloader)
-    dataloader.shuffle=False
+    model = args.fabric.setup_module(model)
+    dataloader = args.fabric.setup_dataloaders(dataloader, use_distributed_sampler=False)
+    dataloader.shuffle = False
     device = args.device
-
     confs = torch.tensor([])
     preds = torch.tensor([])
     softmaxs = torch.tensor([])
     targets = torch.tensor([])
-
     if args.lora:
         import minlora
         minlora.merge_lora(model)
-
     with torch.no_grad():
         top1, correct, n = 0.0, 0.0, 0.0
         for _, data in enumerate(tqdm.tqdm(dataloader, disable=args.no_tqdm)):
@@ -138,9 +133,9 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
 
     metrics = {"top1": top1, "conf":confs, "preds":preds, "softmax":softmaxs, "targets":targets.long()}
     print(f"Done evaluating on {dataset_name}. Accuracy: {100*top1:.2f}%")
-
+    
     if args.lora:
-        minlora.remove_lora(model)
+        minlora.remove_lora(model)   
 
     return metrics
 
@@ -166,7 +161,7 @@ def eval_single_train_dataset(image_encoder, dataset_name, dataloader, args):
         )
         
         index_dataset = utils.IndexWrapper(dataset.train_dataset)        
-        dataloader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=False, num_workers=16)
+        dataloader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
     else:
         preprocess = dataloader.dataset.update_transforms(image_encoder.val_preprocess)
         
