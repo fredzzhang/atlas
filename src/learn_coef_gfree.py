@@ -449,10 +449,6 @@ if __name__ == "__main__":
         "Caltech101": epochs,
         "UCF101": epochs
     }
-
-    datasets = {
-        "ImageNet": epochs,
-    }
         
     # HACK: Some command line arguments are overwritten by defaults here.
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
