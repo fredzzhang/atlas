@@ -26,9 +26,8 @@ from src.distributed import cleanup_ddp, distribute_loader, is_main_process, set
 def avg(x):
     return sum(x) / len(x)
 
-def l1_reg(coefs: torch.Tensor, gamma: float=0.5) -> torch.Tensor:
-    l1_regularization = gamma * torch.norm(coefs, p=1, dim=0)
-    return l1_regularization.mean()
+def lp_reg(x, p=None, gamma=0.5) -> torch.Tensor:
+    return 0 if p is None else gamma * torch.norm(x, p=p, dim=0).mean()
 
 def main(rank, args):
 
@@ -173,10 +172,9 @@ def main(rank, args):
                 labels = [batch["labels"].cuda(),] + [r_batch["labels"].cuda() for r_batch in rmng_batch]
                 all_losses = [loss_fn(x, y) for x, y in zip(logits, labels)]
                 loss = sum(all_losses)
-                # Apply L1 regularisation if needed.
-                if args.l1_reg:
-                    reg = l1_reg(coef)
-                    loss = loss + reg
+                # Apply regularisation if needed.
+                reg = lp_reg(coef, args.lp_reg)
+                loss = loss + reg
                 # Scale the loss.
                 loss = loss / args.num_grad_accumulation
 
