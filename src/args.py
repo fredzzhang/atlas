@@ -43,10 +43,11 @@ def parse_arguments():
         choices=["entropy", "cross_entropy"]
     )
     parser.add_argument(
-        "--l1-reg",
-        default=False,
-        action="store_true",
-        help="Apply L1 regulariser when learning task addition."
+        "--lp-reg",
+        default=None,
+        type=int,
+        choices=[1, 2],
+        help="Regularisation applied to the learned coefficients."
     )
     parser.add_argument(
         "--blockwise-coef",
