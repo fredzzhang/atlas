@@ -230,6 +230,8 @@ if __name__ == "__main__":
         # "SVHN": 4,
         "01234_MNIST": 5,
         "56789_MNIST": 5,
+        "UCF101": 20,
+        "Caltech101": 10,
     }
 
     for dataset in train_datasets:
