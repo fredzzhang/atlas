@@ -44,6 +44,7 @@ registry = {
     name: obj for name, obj in inspect.getmembers(sys.modules[__name__], inspect.isclass)
 }
 
+
 class GenericDataset(object):
     def __init__(self):
         self.train_dataset = None
