@@ -1,3 +1,9 @@
+"""UCF data utilities
+
+Paul Albert <paul.albert@adelaide.edu.au>
+Australian Institute for Machine Learning
+"""
+
 import os
 from torchvision.datasets.vision import VisionDataset
 import torch
