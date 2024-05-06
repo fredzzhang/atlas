@@ -2,6 +2,7 @@
 Text prompt templates for different dataset classes
 
 Fred Zhang <frederic.zhang@adelaide.edu.au>
+Paul Albert <paul.albert@adelaide.edu.au>
 Australian Institute for Machine Learning
 
 Modified from the codebase by Ilharco et al.,
