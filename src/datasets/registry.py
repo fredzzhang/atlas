@@ -22,25 +22,26 @@ from src.datasets.cifar100 import CIFAR100
 from src.datasets.dtd import DTD
 from src.datasets.eurosat import EuroSAT, EuroSATVal
 from src.datasets.gtsrb import GTSRB
-from src.datasets.imagenet import ImageNet
+from src.datasets.imagenet import ImageNet, ImageNetA, ImageNetSketch, ImageNetR, ImageNetV2Thresh, ImageNetV2Top, ImageNetV2Freq, Webvision, WebvisionVal
 from src.datasets.mnist import MNIST
 from src.datasets.resisc45 import RESISC45
 from src.datasets.stl10 import STL10
 from src.datasets.svhn import SVHN
 from src.datasets.sun397 import SUN397
 from src.datasets.food import Food101
-from src.datasets.caltech import Caltech256
+from src.datasets.caltech import Caltech256, Caltech101
 from src.datasets.fgvc_aircraft import FGVCAircraft, FGVCAircraftVal
 from src.datasets.flowers import Flowers102, Flowers102Val
 from src.datasets.oxford_pets import OxfordIIITPet
 from src.datasets.cub2011 import CUB200
 from src.datasets.voc2007 import PascalVOC, PascalVOCVal
 from src.datasets.country211 import Country211, Country211Val
+from src.datasets.ucf101 import UCF101, UCF101Val
+
 
 registry = {
     name: obj for name, obj in inspect.getmembers(sys.modules[__name__], inspect.isclass)
 }
-
 
 class GenericDataset(object):
     def __init__(self):
@@ -48,8 +49,7 @@ class GenericDataset(object):
         self.train_loader = None
         self.test_dataset = None
         self.test_loader = None
-        self.classnames = None
-
+        self.classnames = None   
 
 def split_train_into_train_val(dataset, new_dataset_class_name, batch_size, num_workers, val_fraction, max_val_samples=None, seed=0):
     assert val_fraction > 0. and val_fraction < 1.

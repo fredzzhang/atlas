@@ -241,7 +241,9 @@ if __name__ == "__main__":
         "OxfordIIITPet": 5,
         "CUB200": 20,
         "PascalVOC": 10,
-        "Country211": 15
+        "Country211": 15,
+        "UCF101": 20,
+        "Caltech101": 10,
     }
 
     for dataset in epochs:

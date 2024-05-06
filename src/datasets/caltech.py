@@ -47,6 +47,37 @@ class Caltech256:
 
         self.classnames = [n.split('.')[-1].replace('-', ' ').replace(' 101', '') for n in dataset.categories]
 
+class Caltech101:
+    def __init__(self,
+                 preprocess,
+                 location=os.path.expanduser('~/data'),
+                 batch_size=32,
+                 num_workers=16,
+                 train_fraction=0.8,
+                 seed=0):
+        dataset = PyTorchCaltech101(location, transform=preprocess, download=True)
+        train_size = int(len(dataset) * train_fraction)
+        test_size = len(dataset) - train_size
+        self.train_dataset, self.test_dataset = torch.utils.data.random_split(
+            dataset, [train_size, test_size], generator=Generator().manual_seed(seed)
+        )
+        
+        self.test_dataset.transform = preprocess
+       
+        self.train_loader = torch.utils.data.DataLoader(
+            self.train_dataset,
+            shuffle=True,
+            batch_size=batch_size,
+            num_workers=num_workers,
+        )
+        self.test_loader = torch.utils.data.DataLoader(
+            self.test_dataset,
+            batch_size=batch_size,
+            num_workers=num_workers
+        )
+
+        self.classnames = [n.split('.')[-1].replace('-', ' ').replace(' 101', '') for n in dataset.categories]
+        
 
 class PyTorchCaltech101(VisionDataset):
     """`Caltech 101 <https://data.caltech.edu/records/20086>`_ Dataset.
@@ -299,4 +330,3 @@ class PyTorchCaltech256(VisionDataset):
             self.root,
             filename="256_ObjectCategories.tar",
             md5="67b4f42ca05d46448c6bb8ecd2220f6d",
-        )
