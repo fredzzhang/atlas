@@ -1,5 +1,4 @@
-"""
-Evaluation on a task
+"""Evaluation on a task
 
 Fred Zhang <frederic.zhang@adelaide.edu.au>
 Australian Institute for Machine Learning
@@ -36,16 +35,26 @@ elif args.finetuning_mode == "posthoc":
     print("Evaluating post-hoc linearized models.")
 
 for dataset in [
-    # "Cars",
-    # "DTD",
-    # "EuroSAT",
-    # "GTSRB",
-    # "MNIST",
-    # "RESISC45",
-    # "SUN397",
-    # "SVHN",
-    "01234_MNIST",
-    "56789_MNIST",
+    "Cars",
+    "DTD",
+    "EuroSAT",
+    "GTSRB",
+    "MNIST",
+    "RESISC45",
+    "SUN397",
+    "SVHN",
+    "CIFAR10",
+    "CIFAR100",
+    "ImageNet",
+    "STL10",
+    "Food101",
+    "Caltech256",
+    "FGVCAircraft",
+    "Flowers102",
+    "OxfordIIITPet",
+    "CUB200",
+    "PascalVOC",
+    "Country211"
 ]:
     print("*" * 100)
     print(f"Evaluating on {dataset}")
@@ -99,12 +108,6 @@ for dataset in [
         accuracies[eval_dataset] = eval_single_dataset(
             image_encoder, eval_dataset, args
         )["top1"]
-
-
-if args.finetuning_mode == "none":
-    # Evaluate zero-shot accuracy on ImageNet
-    for split in ["ImageNetVal", "ImageNet"]:
-        accuracies[split] = eval_single_dataset(image_encoder, split, args)["top1"]
 
 # Save results
 if args.finetuning_mode == "none":

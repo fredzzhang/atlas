@@ -43,6 +43,31 @@ def parse_arguments():
         choices=["entropy", "cross_entropy"]
     )
     parser.add_argument(
+        "--lp-reg",
+        default=None,
+        type=int,
+        choices=[1, 2],
+        help="Regularisation applied to the learned coefficients."
+    )
+    parser.add_argument(
+        "--blockwise-coef",
+        default=False,
+        action="store_true",
+        help="Use different coefficients on different parameter blocks."
+    )
+    parser.add_argument(
+        "--partition",
+        default="trainval",
+        choices=["trainval", "traintest"],
+        help="Partitions of the dataset to use."
+    )
+    parser.add_argument(
+        "--control-threshold",
+        default=0.95,
+        type=float,
+        help="Percentage of accuracy on the control dataset to maintain."
+    )
+    parser.add_argument(
         "--train-dataset",
         default=None,
         type=lambda x: x.split(","),

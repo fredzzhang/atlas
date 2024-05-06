@@ -32,9 +32,7 @@ class Caltech256:
         self.train_dataset, self.test_dataset = torch.utils.data.random_split(
             dataset, [train_size, test_size], generator=Generator().manual_seed(seed)
         )
-        
-        self.test_dataset.transform = preprocess
-       
+
         self.train_loader = torch.utils.data.DataLoader(
             self.train_dataset,
             shuffle=True,
@@ -332,4 +330,3 @@ class PyTorchCaltech256(VisionDataset):
             self.root,
             filename="256_ObjectCategories.tar",
             md5="67b4f42ca05d46448c6bb8ecd2220f6d",
-        )

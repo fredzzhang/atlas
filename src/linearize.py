@@ -1,3 +1,13 @@
+"""
+Image encoders with first-order Taylor approximation.
+
+Fred Zhang <frederic.zhang@adelaide.edu.au>
+Australian Institute for Machine Learning
+
+Modified from the codebase by Guillermo Ortiz-Jimenez et al.,
+https://github.com/gortizji/tangent_task_arithmetic
+"""
+
 import abc
 import os
 
@@ -33,7 +43,7 @@ class LinearizedModel(nn.Module):
         func0, params0, self.buffers0 = make_functional_with_buffers(
             init_model.eval(), disable_autograd_tracking=True
         )
-        self.func0 = lambda params, x: func0(params, self.buffers0, x)
+        self.func0 = lambda params, buffers, x: func0(params, buffers, x)
 
         _, params, _ = make_functional_with_buffers(
             model, disable_autograd_tracking=True
@@ -51,11 +61,21 @@ class LinearizedModel(nn.Module):
         for p in self.params:
             p.requires_grad = True
 
+    def _apply(self, fn):
+        """Override method to relocate buffer list
+
+        NOTE: This function signature is for PyTorch 1.13.1.
+        Newer verions have added another optional argument `recurse=True`.
+        """
+        new_self = super()._apply(fn=fn)
+        new_self.buffers0 = (fn(x) for x in new_self.buffers0)
+        return new_self
+
     def __call__(self, x) -> torch.Tensor:
         """Computes the linearized model output using a first-order Taylor decomposition."""
         dparams = [p - p0 for p, p0 in zip(self.params, self.params0)]
         out, dp = jvp(
-            lambda param: self.func0(param, x),
+            lambda param: self.func0(param, self.buffers0, x),
             (tuple(self.params0),),
             (tuple(dparams),),
         )

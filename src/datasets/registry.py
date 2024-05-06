@@ -38,6 +38,7 @@ from src.datasets.voc2007 import PascalVOC, PascalVOCVal
 from src.datasets.country211 import Country211, Country211Val
 from src.datasets.ucf101 import UCF101, UCF101Val
 
+
 registry = {
     name: obj for name, obj in inspect.getmembers(sys.modules[__name__], inspect.isclass)
 }
