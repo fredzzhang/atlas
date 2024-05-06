@@ -332,4 +332,3 @@ class PyTorchCaltech256(VisionDataset):
             self.root,
             filename="256_ObjectCategories.tar",
             md5="67b4f42ca05d46448c6bb8ecd2220f6d",
-        )
