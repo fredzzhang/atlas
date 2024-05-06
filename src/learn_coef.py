@@ -619,7 +619,6 @@ def train(task_vectors, args):
                     for i in range(args.select_tvs):
                         updated_tvs[i].vector = new_tvs[i]
 
-                    model = model.module #Fabric stuff
                     model.image_encoder.update_tvs(updated_tvs[:args.select_tvs])                    
                 else:
                     grad = grad.mean(1)
