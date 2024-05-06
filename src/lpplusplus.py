@@ -74,7 +74,7 @@ def init_lp(features, labels, text_weights, shot):
     centroids = compute_centroids(features.unsqueeze(0), labels.unsqueeze(0))  # [batch, num_class, d]                        
 
     num_classes = text_weights.shape[1]
-    classifier = nn.Linear(features.shape[1], num_classes,bias=True).to(features)
+    classifier = nn.Linear(features.shape[1], num_classes, bias=True).to(features)
     classifier.weight.data = centroids[0]
 
     # lr_w

@@ -22,7 +22,7 @@ from src.datasets.cifar100 import CIFAR100
 from src.datasets.dtd import DTD
 from src.datasets.eurosat import EuroSAT, EuroSATVal
 from src.datasets.gtsrb import GTSRB
-from src.datasets.imagenet import ImageNet
+from src.datasets.imagenet import ImageNet, ImageNetA, ImageNetSketch, ImageNetR, ImageNetV2Thresh, ImageNetV2Top, ImageNetV2Freq, Webvision, WebvisionVal
 from src.datasets.mnist import MNIST
 from src.datasets.resisc45 import RESISC45
 from src.datasets.stl10 import STL10
@@ -41,7 +41,6 @@ from src.datasets.ucf101 import UCF101, UCF101Val
 registry = {
     name: obj for name, obj in inspect.getmembers(sys.modules[__name__], inspect.isclass)
 }
-
 
 class GenericDataset(object):
     def __init__(self):

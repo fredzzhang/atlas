@@ -27,13 +27,24 @@ def get_val_features(image_encoder, dataset_name, dataset, args):
         dataset_name_ = dataset_name.split('_')[-1]
     else:
         dataset_name_ = dataset_name
+        
     classification_head = get_classification_head(args, dataset_name_)
     model = ImageClassifier(image_encoder, classification_head)
 
     model.eval()
-    model.to(args.device)
+
+    print("Loading val set")
+    dataset = get_dataset(
+        dataset_name,
+        model.val_preprocess,
+        location=args.data_location,
+        batch_size=args.batch_size,
+    )
     
     dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
+
+    model = args.fabric.setup_module(model)
+    dataloader = args.fabric.setup_dataloaders(dataloader, use_distributed_sampler=False)
     dataloader.shuffle=False
     device = args.device
 
@@ -44,8 +55,8 @@ def get_val_features(image_encoder, dataset_name, dataset, args):
         top1, correct, n = 0.0, 0.0, 0.0
         for _, data in enumerate(tqdm.tqdm(dataloader, disable=args.no_tqdm)):
             data = maybe_dictionarize(data)
-            x = data["images"].to(device)
-            y = data["labels"].to(device)
+            x = data["images"]
+            y = data["labels"]
 
             logits, f = utils.get_logits(x, model, return_features=True)
             
@@ -62,6 +73,9 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
     else:
         dataset_name_ = dataset_name
         
+    if args.imagenet_ood and ("ImageNet" in dataset_name  or "Webvision" in dataset_name) and test:
+        return eval_imagenet_ood(image_encoder, args, adapter=adapter, alpha_vec=alpha_vec, beta_alpha=beta_alpha, labels_cache=labels_cache, pool=["ImageNet", "ImageNetA", "ImageNetSketch", "ImageNetR", "ImageNetV2Thresh", "ImageNetV2Top", "ImageNetV2Freq", "WebvisionVal"])
+        
     classification_head = get_classification_head(args, dataset_name_)
     model = ImageClassifier(image_encoder, classification_head)
 
@@ -70,15 +84,27 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
     if test:
         print("Loading test set")
         dataset = get_dataset(
+            dataset_name.replace("Val",""),
+            model.val_preprocess,
+            location=args.data_location,
+            batch_size=args.batch_size,
+        )
+    else:
+        print("Loading val set")
+        dataset = get_dataset(
             dataset_name,
             model.val_preprocess,
             location=args.data_location,
             batch_size=args.batch_size,
         )
+            
+
     dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
+
 
     model = args.fabric.setup_module(model)
     dataloader = args.fabric.setup_dataloaders(dataloader, use_distributed_sampler=False)
+    
     dataloader.shuffle = False
     device = args.device
     confs = torch.tensor([])
@@ -98,7 +124,7 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
                 x = data["images"]
                 
             y = data["labels"]
-                
+
             logits, feats = utils.get_logits(x, model, return_features=True)
             feats /= feats.norm(dim=-1, keepdim=True)
             
@@ -286,3 +312,104 @@ def nonlinear_advantage(acc_linear, acc_nonlinear, num_classes):
     err_linear = 1 - acc_linear
     err_nonlinear = 1 - acc_nonlinear
     return (err_linear - err_nonlinear) * num_classes / (num_classes - 1)
+
+
+def eval_imagenet_ood(image_encoder, args, adapter=None, alpha_vec=None, beta_alpha=None, labels_cache=None, pool=["ImageNet", "ImageNetA", "ImageNetSketch", "ImageNetR", "ImageNetV2Thresh", "ImageNetV2Top", "ImageNetV2Freq", "WebvisionVal"]):
+    # Build the classification head with all classes, when the dataset only has one.
+
+    dataset_name_ = "ImageNet"
+
+    metrics = {}
+    if alpha_vec is not None:
+        alpha_vec_ori = alpha_vec.clone()
+    for dataset_name in pool:    
+        classification_head = get_classification_head(args, dataset_name_)        
+        model = ImageClassifier(image_encoder, classification_head)
+        model.eval()
+
+        print("Loading test set")
+        dataset = get_dataset(
+            dataset_name,
+            model.val_preprocess,
+            location=args.data_location,
+                batch_size=args.batch_size,
+        )
+
+        model.classification_head.weight.data = model.classification_head.weight.data[dataset.class_ids(), :]
+        model.classification_head.bias.data = model.classification_head.bias.data[dataset.class_ids()]
+
+        if alpha_vec is not None:
+            alpha_vec = alpha_vec_ori[:, dataset.class_ids()]
+        
+        dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
+
+        model = args.fabric.setup_module(model)
+        dataloader = args.fabric.setup_dataloaders(dataloader, use_distributed_sampler=False)
+            
+        dataloader.shuffle = False
+
+        confs = torch.tensor([])
+        preds = torch.tensor([])
+        softmaxs = torch.tensor([])
+        targets = torch.tensor([])
+        
+        if args.lora:
+            import minlora
+            minlora.merge_lora(model)
+        with torch.no_grad():
+            top1, correct, n = 0.0, 0.0, 0.0
+            for _, data in enumerate(tqdm.tqdm(dataloader, disable=args.no_tqdm)):
+                data = maybe_dictionarize(data)
+                if isinstance(data["images"], list):#Eval with AsymetricAugs
+                    x = data["images"][0]
+                else:
+                    x = data["images"]
+
+                y = data["labels"]
+                
+                x, y = x.to(model.classification_head.weight), y.to(model.classification_head.weight)
+
+                logits, feats = utils.get_logits(x, model, return_features=True)
+                feats /= feats.norm(dim=-1, keepdim=True)
+
+                if alpha_vec is not None:
+                    #LP evaluation
+                    adapter = adapter.to(feats.device)
+                    vision_logits = adapter(feats)
+                    text_logits = logits / 100.
+                    logits = vision_logits[:, dataset.class_ids()] + torch.ones(feats.shape[0], 1).to(feats) @ alpha_vec.to(feats) * text_logits
+                elif adapter is not None:
+                    #TIP evaluation
+                    adapter = adapter.to(feats.device)
+                    affinity = adapter(feats)
+
+                    cache_logits = ((-1) * (beta_alpha[0] - beta_alpha[0] * affinity)).exp() @ labels_cache.to(affinity)
+                    tv_logits = logits            
+                    logits = tv_logits + cache_logits[:, dataset.class_ids()] * beta_alpha[1]
+                    
+                softmaxs = torch.cat((softmaxs, logits.softmax(1).cpu()), dim=0)
+
+                conf, _ = logits.softmax(1).max(1)            
+                confs = torch.cat((confs, conf.cpu()), dim=0)
+                targets = torch.cat((targets, y.cpu()), dim=0)
+
+                pred = logits.argmax(dim=1, keepdim=True)
+                preds = torch.cat((preds, pred.cpu()), dim=0)
+
+                correct += pred.eq(y.view_as(pred)).sum().item()
+
+                n += y.size(0)
+
+            top1 = correct / n
+
+        if dataset_name != "ImageNet": #ImageNet should be the first in the pool
+            metrics[f"top1_{dataset_name}"] = top1
+        else:
+            metrics = {"top1": top1, "conf":confs, "preds":preds, "softmax":softmaxs, "targets":targets.long()}
+
+        print(f"Done evaluating on {dataset_name}. Accuracy: {100*top1:.2f}%")
+    
+        if args.lora:
+            minlora.remove_lora(model)   
+
+    return metrics

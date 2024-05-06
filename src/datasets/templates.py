@@ -375,6 +375,7 @@ dataset_to_template = {
     'GTSRB': gtsrb_template,
     'MNIST': mnist_template,
     'ImageNet': imagenet_template,
+    'Webvision': imagenet_template,
     'RESISC45': resisc45_template,
     'STL10': stl10_template,
     'SUN397': sun397_template,

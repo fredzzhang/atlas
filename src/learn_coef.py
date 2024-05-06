@@ -23,7 +23,7 @@ from src.heads import get_classification_head
 from src.modeling import ImageEncoder, ImageClassifier, ImageEncoder_, LinearizedModel_
 from src.linearize import LinearizedImageEncoder
 from src.task_vectors import LinearizedTaskVector, NonLinearTaskVector
-from src.utils import cosine_lr, cosine_annealing_lr, adjust_lr, TwoTransform, TwoAsymetricTransform, adjust_lr_lp, extract_datasets, IndexWrapper
+from src.utils import cosine_lr, cosine_annealing_lr, adjust_lr, TwoTransform, TwoAsymetricTransform, adjust_lr_lp, extract_datasets, IndexWrapper, update_transforms
 from src.sampler import TwoStreamBatchSampler, SubsetSampler
 
 import matplotlib.pyplot as plt
@@ -66,7 +66,7 @@ def ce_loss_trusted(logits1: torch.Tensor, logits2: torch.Tensor, preds: torch.F
 
 def ssl_loss_trusted(logits1: torch.Tensor, logits2: torch.Tensor, targets: torch.FloatTensor=None, trusted: torch.BoolTensor=None, lam: float=None, index: torch.Tensor=None, thresh: float=0.99) -> torch.Tensor:
     """
-    Computes a Fixmatch type semi supervised loss given trusted samples.
+    Computes a Fixmatch style semi supervised loss given trusted samples.
 
     Args:
     logits1: network logits using an unaugmented view of the image
@@ -123,15 +123,13 @@ def simclr_mixup_loss(logits1: torch.Tensor, logits2: torch.Tensor, lam:float, i
 def main(rank, args):
 
     # Load the individual task vectors.
-    pool = [ "Cars", "DTD", "EuroSAT", "GTSRB",
+    pool = [
         "Cars", "DTD", "EuroSAT", "GTSRB",
         "MNIST", "RESISC45", "SUN397", "SVHN", "CIFAR10",
         "CIFAR100", "ImageNet", "STL10", "Food101", "Caltech256",
         "FGVCAircraft", "Flowers102", "OxfordIIITPet", "CUB200",
         "PascalVOC", "Country211", "Caltech101", "UCF101"
     ]
-
-
     
     VIT_B_32_hugg= ['laion400m_e31', 'laion400m_e32', 'laion2b_e16', 'laion2b_s34b_b79k', 'datacomp_xl_s13b_b90k', 'datacomp_m_s128m_b4k', 'commonpool_m_clip_s128m_b4k', 'commonpool_m_laion_s128m_b4k', 'commonpool_m_image_s128m_b4k', 'commonpool_m_text_s128m_b4k', 'commonpool_m_basic_s128m_b4k', 'commonpool_m_s128m_b4k', 'datacomp_s_s13m_b4k', 'commonpool_s_clip_s13m_b4k', 'commonpool_s_laion_s13m_b4k', 'commonpool_s_image_s13m_b4k', 'commonpool_s_text_s13m_b4k', 'commonpool_s_basic_s13m_b4k',  'commonpool_s_s13m_b4k'] #'openai' (zero-shot base)
     
@@ -224,8 +222,20 @@ def main(rank, args):
     if not args.no_log and not args.merge:
         with open(fname, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
         with open(fname2, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
+        
     if args.merge:
-        coef_dict = torch.load(fname.replace('.txt', '.pth'))
+        if not os.path.isfile(fname.replace('.txt', '.pth')):
+            print(f"Could not find results file to merge with, restarting from the top")
+            try:
+                os.remove(fname)
+                os.remove(fname.replace(".txt", ".pth"))
+            except OSError:
+                pass
+            with open(fname, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
+            with open(fname2, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
+            coef_dict = {}
+        else:
+            coef_dict = torch.load(fname.replace('.txt', '.pth'))
     else:
         coef_dict = {}
         
@@ -251,7 +261,7 @@ def main(rank, args):
         if not args.no_log:
             torch.save(coef_dict, fname.replace('.txt', '.pth'))
             torch.save(coef_dict, fname2.replace('.txt', '.pth'))
-            with open(fname, 'a') as f: f.writelines([f"{dataset}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}", f"{best_coef}\n"])
+            with open(fname, 'a') as f: f.writelines([f"{dataset}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}. Accuracy on OOD datasets {[acc[k] for k in acc.keys() if 'top1' in k]}", f"{best_coef}\n"])
             with open(fname2, 'a') as f: f.writelines([f"{dataset}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}", f"{best_coef}\n"])
             
     if not args.no_log and len(args.datasets) > 0:
@@ -274,6 +284,8 @@ def train(task_vectors, args):
         print("Using linearized fine-tuning.")
 
     orig_dataset = test_dataset.split('Val')[0]
+    if orig_dataset == "Webvision":
+        orig_dataset = "ImageNet"
     pool = [k for k, v in task_vectors.items() if orig_dataset != k]
     task_vectors = [v for k, v in task_vectors.items() if orig_dataset != k]
 
@@ -281,24 +293,24 @@ def train(task_vectors, args):
     fabric.launch()
     args.fabric = fabric
     
-    with fabric.init_module():
-        if args.finetuning_mode == "linear":
-            image_encoder = LinearizedImageEncoder(args, keep_lang=False)
-            image_encoder.model = LinearizedModel_(image_encoder.model, task_vectors, args)
-        else:
-            image_encoder = ImageEncoder(args)
-            image_encoder = ImageEncoder_(image_encoder, task_vectors, args)
-        
-    
-        classification_head = get_classification_head(args, test_dataset)
-        model = ImageClassifier(image_encoder, classification_head)        
-        model.freeze_head()
-    
+   
+    if args.finetuning_mode == "linear":
+        image_encoder = LinearizedImageEncoder(args, keep_lang=False)
+        image_encoder.model = LinearizedModel_(image_encoder.model, task_vectors, args)
+    else:
+        image_encoder = ImageEncoder(args)
+        image_encoder = ImageEncoder_(image_encoder, task_vectors, args)
+
+    classification_head = get_classification_head(args, test_dataset)
+    model = ImageClassifier(image_encoder, classification_head)        
+    model.freeze_head()
+
     #Using the TIP augmentations to learn the coeficients but this does not make a huge difference.
     preprocess_fn = torchvision.transforms.Compose([
         torchvision.transforms.RandomResizedCrop(size=224, scale=(0.5, 1), interpolation=torchvision.transforms.InterpolationMode.BICUBIC),
         torchvision.transforms.RandomHorizontalFlip(p=0.5),
     ] + model.val_preprocess.transforms[-3:])
+
     
     if 'simclr' in args.loss_fn or 'ssl' in args.loss_fn:
         size = 224
@@ -314,12 +326,6 @@ def train(task_vectors, args):
     if args.loss_fn not in ["simclr", "ssl_simclr_trusted", "entropy"]:
         #Changing the transforms in the val/test dataset        
         dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
-        if isinstance(dataset, torch.utils.data.dataset.Subset):#Resisc
-            dataloader.dataset.dataset.transform = model.val_preprocess
-            dataloader.dataset.dataset.transforms = model.val_preprocess
-        else:
-            dataloader.dataset.transform = model.val_preprocess
-            dataloader.dataset.transforms = model.val_preprocess
         
     #Wrapping to get index of the samples
     if args.loss_fn in ["simclr", "ssl_simclr_trusted", "entropy"]:
@@ -339,6 +345,7 @@ def train(task_vectors, args):
         'cb_entropy': cb_softmax_entropy,
         'cross_entropy': torch.nn.CrossEntropyLoss(),
         'trusted': torch.nn.CrossEntropyLoss(),
+        'trusted_mixup': torch.nn.CrossEntropyLoss(),
         'entro_trusted': softmax_entropy,
         'simclr': simclr_loss,
         'ssl_simclr_trusted': ssl_loss_trusted,
@@ -395,6 +402,7 @@ def train(task_vectors, args):
 
 
     model.eval()
+            
     for epoch in range(max_ep):
 
         # Evaluate before each epoch
@@ -407,7 +415,7 @@ def train(task_vectors, args):
             
             if epoch == 0:
                 #Accuracy of the Zero-shot on the test set
-                acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, test=True)
+                acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, test=True and not args.imagenet_ood)
             elif args.loss_fn not in ["simclr", "ssl_simclr_trusted", "entropy"]:
                 acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, test=False)
             
@@ -431,8 +439,7 @@ def train(task_vectors, args):
                 
             if ('trusted' in args.loss_fn and ((epoch >= 0 and 'entro' not in args.loss_fn) or epoch >= 1)) and not (args.semi and epoch >=1):
                 preprocess = data_loader.dataset.update_transforms(image_encoder.val_preprocess)
-                if args.semi:
-                    
+                if args.semi:                    
                     targets = - torch.ones(len(data_loader.dataset), dtype=torch.long)
                     preds = - torch.ones(len(data_loader.dataset), dtype=torch.long)
                     with torch.no_grad():
@@ -509,7 +516,7 @@ def train(task_vectors, args):
                         over_sampling = int(over_sampling) + 1
                         print(f"Oversampling {over_sampling} times")
                         to_keep = torch.cat([to_keep] * over_sampling)
-                    sampler = torch.utils.data.SubsetRandomSampler(to_keep) 
+                    sampler = torch.utils.data.SubsetRandomSampler(to_keep)
                     data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=sampler, num_workers=args.workers)                    
                 num_batches = len(data_loader)
                 data_loader = fabric.setup_dataloaders(data_loader, use_distributed_sampler=False)
@@ -613,8 +620,7 @@ def train(task_vectors, args):
                         updated_tvs[i].vector = new_tvs[i]
 
                     model = model.module #Fabric stuff
-                    model.image_encoder.update_tvs(updated_tvs[:args.select_tvs])
-
+                    model.image_encoder.update_tvs(updated_tvs[:args.select_tvs])                    
                 else:
                     grad = grad.mean(1)
 
@@ -640,11 +646,44 @@ def train(task_vectors, args):
                     
             params = [p for p in model.parameters() if p.requires_grad]    
             optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
+            #optimizer = torch.optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=1e-5)
             model, optimizer = fabric.setup(model, optimizer)
+
+        if args.init and epoch == 0:
+            print("Initializing based on feature similarity")
+            centroids = torch.cat([torch.load(os.path.join(f"{args.save}/{dataset}Val/zeroshot_feats.pt")).unsqueeze(0) for dataset in pool if orig_dataset != dataset], dim=0)
+
+            for i, batch in enumerate(data_loader):
+                batch = maybe_dictionarize(batch, index=True)
+                inputs = batch["images"]
+                labels = batch["labels"]
+                features = []
+                with torch.no_grad():
+                    _, feats = model(inputs, return_features=True)
+                    feats /= feats.norm(1, keepdim=True)
+                    features.append(feats.cpu())
+
+            features = torch.cat(features, dim=0)
+            features = features.mean(0, keepdim=True)
+            sims = torch.mm(F.normalize(features, p=2), F.normalize(centroids, p=2).T).mean(dim=0) #Cosine sim
+            sims = F.softmax(sims,dim=0)#sims / sims.sum()
+            #sims = torch.tensor([0.0496, -0.1261, -0.0051, -0.0229, 0.0772, 0.1165, 0.0335, 0.0534, 0.1092, 0.0280, -0.1288, -0.0202, 0.0923, 0.0035, 0.1026, 0.0733, -0.0370, 0.0630, -0.0292, 0.0645, 0.0314])
+            print(f"Initialized coefs to {sims}")
+            #model.image_encoder.coef.data = (torch.ones(model.module.image_encoder.coef.data.shape) * sims[:, None]).to(model.module.image_encoder.coef.data)
+            model.image_encoder.coef.data = ((torch.rand(model.module.image_encoder.coef.data.shape) - .5) * 2).to(model.module.image_encoder.coef.data)
+            if args.attn:
+                #model.image_encoder.coef1.data = (torch.ones(model.module.image_encoder.coef1.data.shape) * sims[:, None, None]).to(model.module.image_encoder.coef1.data)
+                model.image_encoder.coef1.data = ((torch.rand(model.module.image_encoder.coef1.data.shape) - .5) * 2).to(model.module.image_encoder.coef1.data)
 
         if args.tune_clip:# or 'RN' in args.model:
             model.train() #Compute batch norm stats
-
+            
+        gc.collect();torch.cuda.empty_cache()#Same as above, this memory probelm appears to be related to moving TVs to cuda.
+        if args.finetuning_mode == "linear":
+            model.image_encoder.model = model.image_encoder.model.tv_to_device()
+        else:
+            model.image_encoder = model.image_encoder.tv_to_device()
+            
         for i, batch in enumerate(data_loader):
             start_time = time.time()
 
@@ -670,7 +709,7 @@ def train(task_vectors, args):
                 index = torch.randperm(len(inputs))
                 inputs = lam * inputs + (1-lam) * inputs[index]
                 
-            elif 'ssl' in args.loss_fn and 'entro' not in args.loss_fn:
+            if 'ssl' in args.loss_fn and 'entro' not in args.loss_fn:
                 with torch.no_grad():
                     logits = model(inputs)
             elif 'simclr' in args.loss_fn:
@@ -694,7 +733,10 @@ def train(task_vectors, args):
                 loss = loss_fn(logits, logits2, F.one_hot(preds.to(logits.device)[ids], num_classes=classification_head.out_features).float(), trusted, thresh=threshs[epoch])#, lam, index)
 
             elif 'trusted' in args.loss_fn:
-                loss = loss_fn(logits, F.one_hot(preds.to(logits.device)[ids], num_classes=classification_head.out_features).float())
+                if "mixup" in args.loss_fn:
+                    loss = lam * loss_fn(logits, F.one_hot(preds.to(logits.device)[ids], num_classes=classification_head.out_features).float()) + (1-lam) * loss_fn(logits, F.one_hot(preds.to(logits.device)[ids][index], num_classes=classification_head.out_features).float())
+                else:
+                    loss = loss_fn(logits, F.one_hot(preds.to(logits.device)[ids], num_classes=classification_head.out_features).float())
             elif 'ssl' in args.loss_fn:
                 lam = np.random.beta(1, 1)
                 lam = max(lam, 1-lam)
@@ -725,7 +767,7 @@ def train(task_vectors, args):
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
                 optimizer.step()
                 optimizer.zero_grad()
-
+           
             batch_time = time.time() - start_time
 
             if (
@@ -771,8 +813,13 @@ def train(task_vectors, args):
                 coefs1 = coef1.data.detach().cpu()
             
         print(string)
-
+        
         if args.tip_ft:
+            fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="32")
+            fabric.launch()
+            args.fabric = fabric
+            model = fabric.setup_module(model.module)
+            
             image_encoder = model.module.image_encoder
             with torch.no_grad():
                 to_keep_u = torch.unique(to_keep)
@@ -809,7 +856,9 @@ def train(task_vectors, args):
                 adapter = nn.Linear(features_cache.shape[0], features_cache.shape[1], bias=False)
                 adapter.weight = nn.Parameter(features_cache.t())
                 adapter.register_parameter("beta_alpha", nn.Parameter(torch.tensor([1.,2.]))) #Only way to update the parameter on the GPU, otherwise update on the CPU. In any case fp16 is non trivial
-                #adapter.beta_alpha = torch.tensor([1.,2.])
+                print(sum(p.numel() for p in adapter.parameters() if p.requires_grad))
+
+                
             adapter = adapter.to(features_cache)
 
             best_adapter = copy.deepcopy(adapter).cpu() #Not sure if .clone() is necessary here
@@ -911,7 +960,7 @@ def train(task_vectors, args):
                     optimizer.zero_grad()
                     
                     if (epoch + 1) % 10 == 0:
-                        if args.lp and False:
+                        if args.lp:
                             alpha_vec.data -= lr_alpha * alpha_vec.grad.data
 
                 if not args.tip_cot and not args.ours:
@@ -941,12 +990,11 @@ def train(task_vectors, args):
                         #loss.backward()
                         optimizer.step()
                         optimizer.zero_grad()
-
+                        
                         if (e + 1) % 10 == 0:
                             tbar.set_description(f"Tuning {'LP++' if args.lp else 'TIP'}, epoch {e}, lr {optimizer.param_groups[0]['lr']:.3f}, best val acc {best_acc:.2f}, loss {loss.item():.2f}")
-                            if args.lp and False:
-                                alpha_vec.data -= lr_alpha * alpha_vec.grad.data
-                                alpha_vec.grad.data *= 0.
+                            if args.lp:
+                                alpha_vec.data -= lr_alpha * alpha_vec.grad.data                               
                                 
                         if args.tip_ft and not args.lp:
                             adjust_lr(optimizer, lrs[e], [1., 100.])
@@ -1055,7 +1103,7 @@ if __name__ == "__main__":
 
     args = parse_arguments()
 
-    epochs = 10
+    epochs = 30
     
     datasets = {
         "Cars": epochs,
@@ -1082,6 +1130,9 @@ if __name__ == "__main__":
         "UCF101": epochs
     }
 
+    if args.datasets is not None:
+        datasets = {k:epochs for k in args.datasets}
+
     # HACK: Some command line arguments are overwritten by defaults here.
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 32 if args.model == "ViT-L-14" else 128
@@ -1103,11 +1154,12 @@ if __name__ == "__main__":
         args.save = f"checkpoints/{args.model}"
 
     if args.merge:
-        assert args.fname is not None, "args.fname needs to be specified"
-        print(f"Merging with {os.path.join(args.fname, str(args.seed), 'results.txt')}")
-        datasets_n = extract_datasets(os.path.join(args.fname, str(args.seed), "results.txt"))
-        datasets = {k:v for k,v in datasets.items() if k not in datasets_n}
-        
+        assert args.fname is not None, "--fname needs to be specified"
+        if os.path.isfile(os.path.join(args.fname, str(args.seed), 'results.txt')):
+            print(f"Merging with {os.path.join(args.fname, str(args.seed), 'results.txt')}")
+            datasets_n = extract_datasets(os.path.join(args.fname, str(args.seed), "results.txt"))
+            datasets = {k:v for k,v in datasets.items() if k not in datasets_n}
+            
     args.datasets = datasets
     #torch.multiprocessing.spawn(main, args=(args,), nprocs=args.world_size)
     seed = int(torch.exp(torch.tensor(args.seed)) * 3.1415 * 1000)

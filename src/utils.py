@@ -271,3 +271,16 @@ class IndexWrapper(nn.Module):
     
     def __len__(self):
         return len(self.dataset)
+
+def update_transforms(dataset, new_transform):    
+    if hasattr(dataset, "transforms"):
+        if isinstance(dataset.transforms, torchvision.datasets.vision.StandardTransform) and not isinstance(new_transform, torchvision.datasets.vision.StandardTransform):
+            new_transform = torchvision.datasets.vision.StandardTransform(new_transform)
+        preprocess = dataset.transforms
+        dataset.transforms = new_transform
+    elif hasattr(dataset, "transform"):
+        if isinstance(dataset.transform, torchvision.datasets.vision.StandardTransform) and not isinstance(new_transform, torchvision.datasets.vision.StandardTransform):
+            new_transform = torchvision.datasets.vision.StandardTransform(new_transform)
+        preprocess = dataset.transform
+        dataset.transform = new_transform
+    return dataset

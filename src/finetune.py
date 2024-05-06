@@ -106,7 +106,14 @@ def finetune(rank, args):
 
     if args.lora and is_main_process():
         import minlora
-        minlora.add_lora(model.image_encoder)
+        from functools import partial
+        default_lora_config = {  # specify which layers to add lora to, by default only add to linear layers
+            torch.nn.Linear: {
+                "weight": partial(minlora.LoRAParametrization.from_linear, rank=4),
+            },
+        }
+
+        minlora.add_lora(model.image_encoder, lora_config=default_lora_config)
         params = list(minlora.get_lora_params(model.image_encoder))
         print(f"Training {sum(p.numel() for p in params if p.requires_grad)} LoRA params ({sum(p.numel() for p in params if p.requires_grad)/sum(p.numel() for p in model.parameters() if p.requires_grad)*100.:.2f}%)")
         
@@ -229,8 +236,14 @@ def finetune(rank, args):
                 if linearized_finetuning
                 else os.path.join(ckpdir, "finetuned.pt")
             )
-            image_encoder.save(ft_path)
-            
+            image_encoder.save(ft_path)\
+                
+    from lightning.fabric import Fabric
+    import gc;gc.collect();torch.cuda.empty_cache()
+    fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="32")
+    fabric.launch()
+    args.fabric = fabric
+
     eval_single_dataset(image_encoder, train_dataset, dataset, args, test=True)        
     cleanup_ddp()
     return zs_path, ft_path
@@ -263,13 +276,11 @@ if __name__ == "__main__":
         "Caltech101":10,
     }
 
-    epochs = {
-        "UCF101": 20,
-        "Caltech101":10,
-    }
-
+    args = parse_arguments()
+    if args.datasets is not None:
+        epochs =  {k:v for k,v in epochs.items() if k in args.datasets}
+    
     for dataset in epochs:
-        args = parse_arguments()
 
         # HACK: Some command line arguments are overwritten by defaults here.
         args.lr = 1e-5

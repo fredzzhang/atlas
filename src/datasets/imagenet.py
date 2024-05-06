@@ -1,8 +1,9 @@
 import os
 import torch
-
+import torchvision
 from .common import ImageFolderWithPaths, SubsetSampler
 import numpy as np
+from PIL import Image
 
 
 imagenet_classnames = [
@@ -229,6 +230,9 @@ class ImageNet:
 
     def name(self):
         return 'imagenet/Data/CLS-LOC/'
+    
+    def class_ids(self):
+        return list(range(1000))
 
 class ImageNetTrain(ImageNet):
 
@@ -251,3 +255,139 @@ class ImageNetK(ImageNet):
         idxs = idxs.astype('int')
         sampler = SubsetSampler(np.where(idxs)[0])
         return sampler
+
+
+class ImageNetA(ImageNet):
+    
+    def populate_train(self):        
+        self.train_loader = None
+
+    def get_test_path(self):
+        test_path = os.path.join(self.location, self.name())
+        return test_path
+    
+    def name(self):
+        return 'imagenet-a'
+
+    def class_ids(self):
+        #Class ids with regards to the original 1k of Imagenet
+        return [6, 11, 13, 15, 17, 22, 23, 27, 30, 37, 39, 42, 47, 50, 57, 70, 71, 76, 79, 89, 90, 94, 96, 97, 99, 105, 107, 108, 110, 113, 124, 125, 130, 132, 143, 144, 150, 151, 207, 234, 235, 254, 277, 283, 287, 291, 295, 298, 301, 306, 307, 308, 309, 310, 311, 313, 314, 315, 317, 319, 323, 324, 326, 327, 330, 334, 335, 336, 347, 361, 363, 372, 378, 386, 397, 400, 401, 402, 404, 407, 411, 416, 417, 420, 425, 428, 430, 437, 438, 445, 456, 457, 461, 462, 470, 472, 483, 486, 488, 492, 496, 514, 516, 528, 530, 539, 542, 543, 549, 552, 557, 561, 562, 569, 572, 573, 575, 579, 589, 606, 607, 609, 614, 626, 627, 640, 641, 642, 643, 658, 668, 677, 682, 684, 687, 701, 704, 719, 736, 746, 749, 752, 758, 763, 765, 768, 773, 774, 776, 779, 780, 786, 792, 797, 802, 803, 804, 813, 815, 820, 823, 831, 833, 835, 839, 845, 847, 850, 859, 862, 870, 879, 880, 888, 890, 897, 900, 907, 913, 924, 932, 933, 934, 937, 943, 945, 947, 951, 954, 956, 957, 959, 971, 972, 980, 981, 984, 986, 987, 988]
+
+class ImageNetR(ImageNetA):
+       
+    def name(self):
+        return 'imagenet-r'
+
+    def class_ids(self):
+        #Class ids with regards to the original 1k of Imagenet
+        return [1, 2, 4, 6, 8, 9, 11, 13, 22, 23, 26, 29, 31, 39, 47, 63, 71, 76, 79, 84, 90, 94, 96, 97, 99, 100, 105, 107, 113, 122, 125, 130, 132, 144, 145, 147, 148, 150, 151, 155, 160, 161, 162, 163, 171, 172, 178, 187, 195, 199, 203, 207, 208, 219, 231, 232, 234, 235, 242, 245, 247, 250, 251, 254, 259, 260, 263, 265, 267, 269, 276, 277, 281, 288, 289, 291, 292, 293, 296, 299, 301, 308, 309, 310, 311, 314, 315, 319, 323, 327, 330, 334, 335, 337, 338, 340, 341, 344, 347, 353, 355, 361, 362, 365, 366, 367, 368, 372, 388, 390, 393, 397, 401, 407, 413, 414, 425, 428, 430, 435, 437, 441, 447, 448, 457, 462, 463, 469, 470, 471, 472, 476, 483, 487, 515, 546, 555, 558, 570, 579, 583, 587, 593, 594, 596, 609, 613, 617, 621, 629, 637, 657, 658, 701, 717, 724, 763, 768, 774, 776, 779, 780, 787, 805, 812, 815, 820, 824, 833, 847, 852, 866, 875, 883, 889, 895, 907, 928, 931, 932, 933, 934, 936, 937, 943, 945, 947, 948, 949, 951, 953, 954, 957, 963, 965, 967, 980, 981, 983, 988] 
+
+class ImageNetV2Freq(ImageNetA):
+    def populate_test(self):
+        #Because the folder names are string numbers .sort() is wrong and we cannot use ImageFolder or we get the wrong class order, class_ids(self) can also be used alternatively
+        classes = os.listdir(os.path.join(self.location, self.name()))
+        classes = [int(c) for c in classes]
+        classes.sort()
+        paths = []
+        targets = []
+        for c in classes:
+            files = [os.path.join(self.location, self.name(), str(c), f) for f in os.listdir(os.path.join(self.location, self.name(), str(c)))]
+            paths += files
+            targets += [c] * len(files)
+                
+        self.test_dataset = BasicImageDataset(paths, targets, self.preprocess)
+        
+        self.test_loader = torch.utils.data.DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            sampler=self.get_test_sampler()
+        )
+
+    def name(self):
+        return 'imagenetv2-matched-frequency/'
+
+    def class_ids(self):
+        return list(range(1000))
+    
+class ImageNetV2Thresh(ImageNetV2Freq):
+    def name(self):
+        return 'imagenetv2-threshold0.7/'
+
+class ImageNetV2Top(ImageNetV2Freq):
+    def name(self):
+        return 'imagenetv2-top-images/'
+
+class ImageNetSketch(ImageNetA):
+    def name(self):
+        return 'ImageNet-Sketch/sketch'
+
+    def class_ids(self):
+        return list(range(1000))
+
+    
+class BasicImageDataset(torch.utils.data.Dataset):
+    def __init__(self, paths, targets, transform=None):
+        self.paths = paths
+        self.targets = targets
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.targets)
+
+    def __getitem__(self, idx):
+        with open(self.paths[idx], "rb") as f:
+            img = Image.open(f)
+            image = img.convert("RGB")
+        label = self.targets[idx]
+        if self.transform is not None:
+            image = self.transform(image)
+            
+        return image, label
+
+
+class Webvision(ImageNet):
+    NAME="webvision"
+    def populate_train(self):
+        with open(os.path.join(self.location, f'{self.NAME}/info/train_filelist_google.txt')) as f:
+            lines=f.readlines()
+            train_imgs = []
+            targets = []
+            for line in lines:
+                img, target = line.split()
+                target = int(target)
+                train_imgs.append(os.path.join(self.location, f'{self.NAME}', img))
+                targets.append(target)
+                
+        self.train_dataset = BasicImageDataset(train_imgs, targets, self.preprocess)
+        sampler = self.get_train_sampler()
+        kwargs = {'shuffle' : True} if sampler is None else {}
+        self.train_loader = torch.utils.data.DataLoader(
+            self.train_dataset,
+            sampler=sampler,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            **kwargs,
+        )
+        
+            
+class WebvisionVal(Webvision):
+    def populate_test(self):
+        with open(os.path.join(self.location, f'{self.NAME}/info/val_filelist.txt')) as f:
+            lines=f.readlines()
+            val_imgs = []
+            targets = []
+            for line in lines:
+                img, target = line.split()
+                target = int(target)
+                val_imgs.append(os.path.join(self.location, f'{self.NAME}/val_images_256', img))
+                targets.append(target)
+                
+        self.test_dataset = BasicImageDataset(val_imgs, targets, self.preprocess)
+        
+        self.test_loader = torch.utils.data.DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            sampler=self.get_test_sampler()
+        )

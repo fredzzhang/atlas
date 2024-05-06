@@ -29,8 +29,9 @@ class _TaskVector(abc.ABC):
                 if "mlp" in key and "lora_" not in key: #pytorch parametrization stuff
                     key = key.replace(".weight", ".parametrizations.weight.original")
                 self.vector[key] = torch.tensor(0)
+                
             for key in finetuned_state_dict:
-                self.vector[key.replace("module.image_encoder.", "")] = finetuned_state_dict[key]            
+                self.vector[key.replace("module.image_encoder.", "")] = finetuned_state_dict[key]
 
         elif hugg_checkpoint is not None:
             pretrained_state_dict = self._load_checkpoint(

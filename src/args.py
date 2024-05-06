@@ -40,7 +40,7 @@ def parse_arguments():
         default='entropy',
         type=str,
         help="Loss function to use.",
-        choices=["entropy", "cross_entropy", "simclr", "simclr_entro", "barlow_simclr", 'simclr_mixup', "cb_entropy", "ssl_simclr", "trusted", "entro_trusted", "ssl_simclr_trusted", "ssl_simclr_trusted_entro"]
+        choices=["entropy", "cross_entropy", "simclr", "simclr_entro", "barlow_simclr", 'simclr_mixup', "cb_entropy", "ssl_simclr", "trusted", "trusted_mixup", "entro_trusted", "ssl_simclr_trusted", "ssl_simclr_trusted_entro"]
     )
     parser.add_argument(
         "--lr-scheduler",
@@ -191,6 +191,13 @@ def parse_arguments():
         action='store_true',
         help="Batch norm or LayerNorm tuning"
     )
+
+    parser.add_argument(
+        "--datasets",
+        default=None,
+        nargs='+',
+        help="Subset of datasets to train on."
+    )
     parser.add_argument(
         "--tip-ft",
         default=False,
@@ -294,6 +301,12 @@ def parse_arguments():
         help="Save file name",
     )
     parser.add_argument(
+        "--fabric",
+        type=str,
+        default=None,
+        help="Placeholder for eval functions.",
+    )
+    parser.add_argument(
         "--lora",
         default=False,
         action="store_true",
@@ -322,6 +335,18 @@ def parse_arguments():
         default=False,
         action='store_true',
         help="Will run on the missing datasets from the results.txt specified through fname and complete the specified results.txt file. Needs fname to be specified."
+    )
+    parser.add_argument(
+        "--imagenet-ood",
+        default=False,
+        action='store_true',
+        help="Evaluates ImageNet weights on OOD versions as well (test only)."
+    )
+    parser.add_argument(
+        "--init",
+        default=False,
+        action='store_true',
+        help="Init coefs with feature sims."
     )
     
     parsed_args = parser.parse_args()

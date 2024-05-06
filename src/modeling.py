@@ -215,21 +215,22 @@ class LinearizedModel_(nn.Module):
         else:
             self.coef = nn.Parameter(torch.zeros(len(task_vectors)))
 
-         
-    def _apply(self, fn, *args, **kwargs):
-        """Override method to relocate buffer list
+    def _apply(self, fn):
 
-        NOTE: This function signature is for PyTorch 1.13.1.
-        Newer verions have added another optional argument `recurse=True`.
-        """
-        new_self = super()._apply(fn=fn, *args, **kwargs)
-        
-        new_self.buffers0 = tuple(fn(x, *args, **kwargs) for x in new_self.buffers0)
-        if not self.tv_cpu:
-            new_self.dparams = [[fn(dp, *args, **kwargs) for dp in dparam] for dparam in new_self.dparams]
-            
+        new_self = super()._apply(fn=fn)
+        new_self.buffers0 = tuple(x.to(new_self.coef) for x in new_self.buffers0)
         return new_self
-    
+            
+    def tv_to_device(self):
+        '''
+        Moves Tvs to the coef device.
+        Usefull to limit memory usage when selecting task vectors/cpu mode
+        '''
+        if not self.tv_cpu:
+            self.dparams = [[dp.to(self.coef) for dp in dparam] for dparam in self.dparams]
+            
+        return self        
+             
     def __call__(self, x, zero_shot=False) -> torch.Tensor:            
         if self.attn:
             dparams = [sum([p.to(c.device, non_blocking=True) * c[i] for p, c in zip(dp, self.coef)]) if i not in self.attn_l else sum([torch.cat((p[:len(p)//3].to(c.device, non_blocking=True) * c[i, 0], p[len(p)//3:2*len(p)//3].to(c.device, non_blocking=True) * c[i, 1], p[2*len(p)//3:len(p)].to(c.device, non_blocking=True) * c[i, 2]))  for p, c in zip(dp, self.coef1)]) for i, dp in enumerate(zip(*self.dparams))]
@@ -254,18 +255,29 @@ class ImageEncoder_(nn.Module):
     def __init__(self, model, task_vectors, args) -> None:
         """A wrapper class to enable compositions of task vectors"""
         super().__init__()
+        
+        if args.lora:
+            import minlora
+            from functools import partial
+            default_lora_config = {  # specify which layers to add lora to, by default only add to linear layers
+                torch.nn.Linear: {
+                    "weight": partial(minlora.LoRAParametrization.from_linear, rank=4),
+                },
+            }
             
+            minlora.add_lora(model, lora_config=default_lora_config)
+        
         func, params, self.buffer = make_functional_with_buffers(model)
         self.base_func = [func]
         # NOTE This is important to avoid the following error
         # NotImplementedError: Cannot copy out of meta tensor; no data!
         self.func = lambda p, b, x: self.base_func[0](p, b, x)
-        #self.func = func
         
         self.params = nn.ParameterList(params)
         self.attn_l = []
         n = 0
         self.names = []
+        self.buffer_index = [-1] #-1 for unimportant values such as attn mask and num_batches_tracked (equal to 0/-inf in task vectors)
         for i, (p, (name, _)) in enumerate(zip(self.params, model.named_parameters())):
             if ".visual" not in name:
                 p.requires_grad = False
@@ -279,7 +291,16 @@ class ImageEncoder_(nn.Module):
             if 'attn.in_proj' in name:
                 self.attn_l.append(i)
                 n+=1
-                
+            if ".bn" in name or ".downsample" in name:
+                if ".bias" in name:
+                    self.buffer_index.append(i-1)
+                    self.buffer_index.append(i)
+                    self.buffer_index.append(-1)#num_batches_tracked
+                    
+        self.bnames = []
+        for i, (name, _) in enumerate(model.named_buffers()):
+            self.bnames.append(name)
+            
         self.attn = args.attn
         self.layerwise = args.layerwise
                 
@@ -297,10 +318,14 @@ class ImageEncoder_(nn.Module):
             del self.dparams
             
         dparams = []
+        bufs = []
         for tv in task_vectors:
-            dp = [tv.vector[k] for k in self.names]
+            dp = [tv.vector[k] if k in tv.vector.keys() else torch.tensor([0.]) for k in self.names]
             dparams.append(dp)
-                
+            bp = [tv.vector[k] if k in tv.vector.keys() else torch.tensor([0.]) for k in self.bnames]
+            bufs.append(bp)
+
+        self.bufs = bufs                
         self.dparams = dparams
 
         device = self.params[0].device
@@ -318,7 +343,7 @@ class ImageEncoder_(nn.Module):
             self.coef = nn.Parameter(torch.zeros(len(task_vectors), len(self.params)))
         else:
             self.coef = nn.Parameter(torch.zeros(len(task_vectors)))
-
+        
     def train(self, mode):
         new_self = super().train(mode)
         for name, child in new_self.base_func[0].stateless_model.model.visual.named_modules():
@@ -328,18 +353,23 @@ class ImageEncoder_(nn.Module):
                 else:
                     child.eval()
         return new_self
-     
-    def _apply(self, fn, *args, **kwargs):
-        """Override method to relocate buffer list
 
-        NOTE: This function signature is for PyTorch 1.13.1.
-        Newer verions have added another optional argument `recurse=True`.
-        """
-        new_self = super()._apply(fn=fn, *args, **kwargs)
-        new_self.buffer = tuple(fn(x, *args, **kwargs) for x in new_self.buffer)
-        if not self.tv_cpu:
-            new_self.dparams = [[fn(dp, *args, **kwargs) for dp in dparam] for dparam in new_self.dparams]
+    def _apply(self, fn):
+
+        new_self = super()._apply(fn=fn)
+        new_self.buffer = tuple(x.to(new_self.coef) for x in new_self.buffer)
         return new_self
+    
+    def tv_to_device(self):
+        '''
+        Moves Tvs to the coef device.
+        Usefull to limit memory usage when selecting task vectors/cpu mode
+        '''
+        if not self.tv_cpu:
+            self.dparams = [[dp.to(self.coef) for dp in dparam] for dparam in self.dparams]
+            self.bufs = [[bp.to(self.coef) for bp in bparam] for bparam in self.bufs]
+            
+        return self        
         
     def __call__(self, x, zero_shot=False) -> torch.Tensor:
         if zero_shot:
@@ -353,7 +383,10 @@ class ImageEncoder_(nn.Module):
             dparams = [sum([p.to(c.device, non_blocking=True) * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
             
         new_params = [dp + p for i, (dp, p) in enumerate(zip(dparams, self.params))]
-        return self.func(new_params, self.buffer, x)
+        #c[self.buffer_index[i]].detach()
+        buffers = [sum([b.to(c.device, non_blocking=True) * 0. for b, c in zip(bp, self.coef)]) for i, bp in enumerate(zip(*self.bufs))]
+        buffers = [(bp + b) for (bp, b) in zip(buffers, self.buffer)]
+        return self.func(new_params, buffers, x)
 
     def __del_(self):
         # Manual delete of the reference to task vectors. Causes a memory leak otherwise.
