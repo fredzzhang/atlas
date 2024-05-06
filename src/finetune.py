@@ -236,6 +236,7 @@ if __name__ == "__main__":
         "ImageNet": 10,
         "STL10": 4,
         "Food101": 15,
+        "Caltech101": 10,
         "Caltech256": 8,
         "FGVCAircraft": 60,
         "Flowers102": 40,
