@@ -236,7 +236,6 @@ if __name__ == "__main__":
         "ImageNet": 10,
         "STL10": 4,
         "Food101": 15,
-        "Caltech101": 10,
         "Caltech256": 8,
         "FGVCAircraft": 60,
         "Flowers102": 40,
@@ -245,7 +244,6 @@ if __name__ == "__main__":
         "PascalVOC": 10,
         "Country211": 15,
         "UCF101": 20,
-        "Caltech101": 10,
     }
 
     for dataset in epochs:
