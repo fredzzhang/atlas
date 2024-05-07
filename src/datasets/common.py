@@ -147,7 +147,7 @@ def get_dataloader(dataset, is_train, args, image_encoder=None):
         src = dataloader.dataset
         subsample_size = int(len(src) * args.subsample)
         lengths = [subsample_size, len(src) - subsample_size]
-        print(f"Subsampling dataloader from {len(src)} to {lengths[0]}.")
+        print(f"Subsampling dataloader from size {len(src)} to size {lengths[0]}.")
         new_dataset, _ = random_split(src, lengths)
         dataloader = DataLoader(
             new_dataset,
