@@ -151,7 +151,7 @@ def get_dataloader(dataset, is_train, args, image_encoder=None):
         new_dataset, _ = random_split(src, lengths)
         dataloader = DataLoader(
             new_dataset,
-            batch_size=args.batch_size,
+            batch_size=dataloader.batch_size,
             num_workers=2,
         )
     return dataloader
