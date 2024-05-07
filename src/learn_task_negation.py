@@ -264,8 +264,8 @@ if __name__ == "__main__":
 
     args = parse_arguments()
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
-    args.batch_size = 16 if args.model == "ViT-L-14" else 128
-    args.num_grad_accumulation = 8 if args.model == "ViT-L-14" else 1
+    args.batch_size = 64 if args.model == "ViT-L-14" else 128
+    args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
     args.print_every = 10
     args.ctr_dataset = "ImageNet" + "Val"
     if args.seed is not None:
