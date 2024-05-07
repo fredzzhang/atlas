@@ -102,7 +102,7 @@ def main(rank, args):
     if args.print_every * 10 < num_batches:
         print_every = int(num_batches / 10)
     elif args.print_every * 4 > num_batches:
-        print_every = int(num_batches / 4)
+        print_every = max(int(num_batches / 4), 1)
     else:
         print_every = args.print_every
 
@@ -170,8 +170,9 @@ def main(rank, args):
             )
             data_time = time.time() - start_time
             
+            split = [len(batch["images"]),] + [len(r_batch["images"]) for r_batch in rmng_batch]
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                logits = ddp_model(inputs, [int(args.batch_size / n_datasets / args.world_size)] * n_datasets)
+                logits = ddp_model(inputs, split)
                 labels = [batch["labels"].cuda(),] + [r_batch["labels"].cuda() for r_batch in rmng_batch]
                 all_losses = [loss_fn(x, y) for x, y in zip(logits, labels)]
                 loss = sum(all_losses)
@@ -183,7 +184,7 @@ def main(rank, args):
 
             scaler.scale(loss).backward()
 
-            if (i + 1) % args.num_grad_accumulation == 0:
+            if i % args.num_grad_accumulation == 0:
 
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
                 scaler.step(optimizer)
@@ -194,13 +195,13 @@ def main(rank, args):
 
             if (
                 step % print_every == 0
-                and ((i + 1) % args.num_grad_accumulation == 0)
+                and (i % args.num_grad_accumulation == 0)
                 and is_main_process()
             ):
-                percent_complete = 100 * (i + 1) / len(ddp_prim_loader)
+                percent_complete = 100 * i / len(ddp_prim_loader)
                 print_losses = str([round(x.item(), 4) for x in all_losses])
                 print(
-                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(ddp_prim_loader)}]\t"      # noqa: E501
+                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i}/{len(ddp_prim_loader)}]\t"          # noqa: E501
                     f"Losses: {print_losses:<72}\t"                                                         # noqa: E501
                     f"Data (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",                                # noqa: E501
                     flush=True,
