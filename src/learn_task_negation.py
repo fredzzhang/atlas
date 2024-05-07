@@ -102,7 +102,7 @@ def main(rank, args):
     if args.print_every * 10 < num_batches:
         print_every = int(num_batches / 10)
     elif args.print_every * 4 > num_batches:
-        print_every = int(num_batches / 4)
+        print_every = max(int(num_batches / 4), 1)
     else:
         print_every = args.print_every
 
@@ -168,8 +168,9 @@ def main(rank, args):
             inputs = torch.cat([batch["images"].cuda(), ctr_batch["images"].cuda()])
             data_time = time.time() - start_time
             
+            split = [len(batch["images"]), len(ctr_batch["images"])]
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                logits = ddp_model(inputs, [int(args.batch_size / 2 / args.world_size)] * 2)
+                logits = ddp_model(inputs, split)
                 labels = [batch["labels"].cuda(), ctr_batch["labels"].cuda()]
                 loss_tgt, loss_ctr = [loss_fn(x, y) for x, y in zip(logits, labels)]
                 """Gradient ascent on the target dataset,
