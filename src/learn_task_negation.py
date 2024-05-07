@@ -180,7 +180,7 @@ def main(rank, args):
 
             scaler.scale(loss).backward()
 
-            if (i + 1) % args.num_grad_accumulation == 0:
+            if i % args.num_grad_accumulation == 0:
 
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
                 scaler.step(optimizer)
@@ -191,12 +191,12 @@ def main(rank, args):
 
             if (
                 step % print_every == 0
-                and ((i + 1) % args.num_grad_accumulation == 0)
+                and (i % args.num_grad_accumulation == 0)
                 and is_main_process()
             ):
-                percent_complete = 100 * (i + 1) / len(ddp_tgt_loader)
+                percent_complete = 100 * i / len(ddp_tgt_loader)
                 print(
-                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(ddp_tgt_loader)}]\t"   # noqa: E501
+                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i}/{len(ddp_tgt_loader)}]\t"       # noqa: E501
                     f"Loss (tgt.): {loss_tgt.item():.6f}\tLoss (ctr.): {loss_ctr.item():.6f}\t"         # noqa: E501
                     f"Data (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",                            # noqa: E501
                     flush=True,
