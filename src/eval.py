@@ -111,9 +111,6 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
     preds = torch.tensor([])
     softmaxs = torch.tensor([])
     targets = torch.tensor([])
-    if args.lora:
-        import minlora
-        minlora.merge_lora(model)
     with torch.no_grad():
         top1, correct, n = 0.0, 0.0, 0.0
         for _, data in enumerate(tqdm.tqdm(dataloader, disable=args.no_tqdm)):
@@ -160,9 +157,6 @@ def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None
     metrics = {"top1": top1, "conf":confs, "preds":preds, "softmax":softmaxs, "targets":targets.long()}
     print(f"Done evaluating on {dataset_name}. Accuracy: {100*top1:.2f}%")
     
-    if args.lora:
-        minlora.remove_lora(model)   
-
     return metrics
 
 def eval_single_train_dataset(image_encoder, dataset_name, dataloader, args):
@@ -353,9 +347,6 @@ def eval_imagenet_ood(image_encoder, args, adapter=None, alpha_vec=None, beta_al
         softmaxs = torch.tensor([])
         targets = torch.tensor([])
         
-        if args.lora:
-            import minlora
-            minlora.merge_lora(model)
         with torch.no_grad():
             top1, correct, n = 0.0, 0.0, 0.0
             for _, data in enumerate(tqdm.tqdm(dataloader, disable=args.no_tqdm)):
@@ -409,7 +400,5 @@ def eval_imagenet_ood(image_encoder, args, adapter=None, alpha_vec=None, beta_al
 
         print(f"Done evaluating on {dataset_name}. Accuracy: {100*top1:.2f}%")
     
-        if args.lora:
-            minlora.remove_lora(model)   
 
     return metrics

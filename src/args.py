@@ -360,6 +360,18 @@ def parse_arguments():
         action='store_true',
         help="Init coefs with feature sims."
     )
+    parser.add_argument(
+        "--mlp-only",
+        default=False,
+        action='store_true',
+        help="LoRA on mlp layers only."
+    )
+    parser.add_argument(
+        "--attn-only",
+        default=False,
+        action='store_true',
+        help="LoRA on attn layers only."
+    )
     
     parsed_args = parser.parse_args()
     parsed_args.device = "cuda" if torch.cuda.is_available() else "cpu"

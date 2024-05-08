@@ -49,7 +49,7 @@ def finetune(rank, args):
     lora_path = (
         os.path.join(args.save, train_dataset, "linear_lora_{args.rank}.pt")
         if linearized_finetuning
-        else os.path.join(args.save, train_dataset, f"lora_{args.rank}.pt")
+        else os.path.join(args.save, train_dataset, f"lora_{args.rank}{'_attn_only' if args.attn_only else ''}{'_mlp_only' if args.mlp_only else ''}.pt")
     )
     zs_path = (
         os.path.join(args.save, train_dataset, "linear_zeroshot.pt")
@@ -103,8 +103,8 @@ def finetune(rank, args):
     )    
 
     if args.lora and is_main_process():
-        ori_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        model.image_encoder.model, params = apply_lora(model.image_encoder.model, rank=args.rank)
+        ori_params = sum(p.numel() for p in model.parameters() if p.requires_grad)        
+        model.image_encoder.model, params = apply_lora(model.image_encoder.model, rank=args.rank, mlp=not args.attn_only, attn=not args.mlp_only)
         print(f"Training {sum(p.numel() for p in params if p.requires_grad)} LoRA params ({sum(p.numel() for p in params if p.requires_grad)/ori_params*100.:.2f}%)")
         
     model = model.cuda()
@@ -122,7 +122,7 @@ def finetune(rank, args):
 
         
     import gc;gc.collect();torch.cuda.empty_cache()
-    fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="16")
+    fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="16-mixed")
     fabric.launch()
     args.fabric = fabric
 
@@ -234,8 +234,7 @@ def finetune(rank, args):
         if args.lora:
             import loratorch
             lora_state_dict = loratorch.lora_state_dict(ddp_model)
-            print(os.path.join(ckpdir, f"lora_{rank}.pt"))
-            torch.save(lora_state_dict, os.path.join(ckpdir, f"lora_{args.rank}.pt"))
+            torch.save(lora_state_dict, lora_path)
         else:
             ft_path = (
                 os.path.join(ckpdir, "linear_finetuned.pt")

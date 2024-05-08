@@ -312,17 +312,17 @@ def get_n_shots(dataset, shots, n_class, args):
     preds[to_keep] = targets[to_keep]
     return to_keep, preds
 
-def apply_lora(model, rank=16, alpha=32):
+def apply_lora(model, rank=16, alpha=32, mlp=True, attn=True):
     state_dict = model.state_dict()
     for layer_index, resblock in enumerate(model.visual.transformer.resblocks):
-        if hasattr(resblock, 'attn'):        
+        if hasattr(resblock, 'attn') and attn:
             multihead = resblock.attn
             embed_dim = multihead.embed_dim
             num_heads = multihead.num_heads
             lora_multihead = loratorch.MultiheadAttention(embed_dim, num_heads, r=rank, lora_alpha=alpha)
             resblock.attn = lora_multihead
 
-        if hasattr(resblock, 'mlp'):
+        if hasattr(resblock, 'mlp') and mlp:
             linear = resblock.mlp
             c_fc = linear.c_fc
             c_proj = linear.c_proj

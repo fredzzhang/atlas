@@ -674,6 +674,11 @@ def train(task_vectors, args):
                 i // args.num_grad_accumulation
                 + epoch * num_batches // args.num_grad_accumulation
             )
+
+            if args.softmax_coef:
+                model.module.image_encoder.coef.data = F.softmax(model.module.image_encoder.coef.data, dim=0)
+                if args.attn:
+                    model.module.image_encoder.coef1.data = F.softmax(model.module.image_encoder.coef1.data, dim=0)
             
             batch = maybe_dictionarize(batch, index=True)
             inputs = batch["images"]
@@ -761,12 +766,7 @@ def train(task_vectors, args):
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
                 optimizer.step()
                 optimizer.zero_grad()
-                
-                if args.softmax_coef:
-                    model.module.image_encoder.coef = F.softmax(model.module.image_encoder.coef, dim=0)
-                    if args.attn:
-                        model.module.image_encoder.coef1 = F.softmax(model.module.image_encoder.coef, dim=0)
-           
+                           
             batch_time = time.time() - start_time
 
             if (
