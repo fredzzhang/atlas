@@ -145,7 +145,7 @@ def main(rank, args):
     for i, dataset in enumerate(pool):
         if args.lora:
             pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
-            finetuned_checkpoint = f"{args.save}/{dataset}Val/lora.pt"
+            finetuned_checkpoint = f"{args.save}/{dataset}Val/lora_{args.rank}.pt"
             task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint, scale=args.scale, lora=args.lora)
         elif args.hugg:
             pretrained_checkpoint = f"{args.save}/CarsVal/zeroshot.pt"
@@ -166,7 +166,6 @@ def main(rank, args):
             finetuned_checkpoint = f"{args.save}/{dataset}Val/finetuned.pt"
             task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint, scale=args.scale)
 
-    args.rank = rank
     fname = f"results/{args.model}/"
     if args.fname is not None:
         fname = os.path.join(args.fname, str(args.seed))
@@ -266,7 +265,7 @@ def main(rank, args):
         with open(fname, 'a') as f: f.writelines([f"\nArguments {args}"])
     
 def train(task_vectors, args):
-    if args.loss_fn in ["simclr", "ssl_simclr_trusted", "entropy"]:#Test-time adaptations
+    if args.loss_fn in ["simclr", "ssl_simclr_trusted", "entropy", "entropy_sar"]:#Test-time adaptations
         test_dataset = args.test_dataset
     else:
         test_dataset = args.test_dataset + 'Val'
@@ -328,7 +327,7 @@ def train(task_vectors, args):
         dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
         
     #Wrapping to get index of the samples
-    if args.loss_fn in ["simclr", "ssl_simclr_trusted", "entropy"]:
+    if args.loss_fn in ["simclr", "ssl_simclr_trusted", "entropy", "entropy_sar"]:
         index_dataset = IndexWrapper(dataset.test_dataset) #Test time adapatation (no labels used)
     else:
         index_dataset = IndexWrapper(dataset.train_dataset)
@@ -359,6 +358,7 @@ def train(task_vectors, args):
         optimizer = torch.optim.AdamW([{'params': [model.image_encoder.coef] + [model.image_encoder.coef1]}, {'params': model.image_encoder.params}], lr=args.lr, weight_decay=args.wd)
     else:
         optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
+        
     #optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
     #optimizer = torch.optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=1e-5)
 
@@ -694,6 +694,13 @@ def train(task_vectors, args):
 
             if 'entropy_sar' in args.loss_fn:                              
                 _ = model(inputs)
+                
+                if i % 10 == 0:
+                    print(
+                        f"Train Epoch: {epoch} [{i + 1}/{len(data_loader)}]\t",
+                        flush=True,
+                    )
+
                 continue
             
             elif 'ssl' in args.loss_fn and 'entro' not in args.loss_fn:

@@ -262,16 +262,8 @@ class ImageEncoder_(nn.Module):
         super().__init__()
         
         if args.lora:
-            import minlora
-            from functools import partial
-            default_lora_config = {  # specify which layers to add lora to, by default only add to linear layers
-                torch.nn.Linear: {
-                    "weight": partial(minlora.LoRAParametrization.from_linear, rank=4),
-                },
-            }
-            
-            minlora.add_lora(model, lora_config=default_lora_config)
-        
+            model.model, params = utils.apply_lora(model.model, rank=args.rank)
+           
         func, params, self.buffer = make_functional_with_buffers(model)
         self.base_func = [func]
         # NOTE This is important to avoid the following error
@@ -301,7 +293,7 @@ class ImageEncoder_(nn.Module):
                     self.buffer_index.append(i-1)
                     self.buffer_index.append(i)
                     self.buffer_index.append(-1)#num_batches_tracked
-                    
+                            
         self.bnames = []
         for i, (name, _) in enumerate(model.named_buffers()):
             self.bnames.append(name)
