@@ -9,6 +9,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 
+from src.datasets.common import maybe_dictionarize
+from tqdm import tqdm
+import loratorch
 
 def assign_learning_rate(param_group, new_lr):
     param_group["lr"] = new_lr
@@ -284,3 +287,65 @@ def update_transforms(dataset, new_transform):
         preprocess = dataset.transform
         dataset.transform = new_transform
     return dataset
+
+def get_n_shots(dataset, shots, n_class, args):
+    index_dataset = IndexWrapper(dataset)
+    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size*2, shuffle=True, num_workers=args.workers)
+    
+    targets = - torch.ones(len(dataset), dtype=torch.long)
+    preds = - torch.ones(len(dataset), dtype=torch.long)
+    with torch.no_grad():
+        for i, batch in enumerate(tqdm(data_loader, disable=args.no_tqdm)):
+            batch = maybe_dictionarize(batch, index=True)
+            targets[batch["index"]] = batch["labels"].to(targets.device)
+            if i >= 1000:
+                print("Too much data, breaking ...")
+                break
+
+    to_keep = torch.tensor([], dtype=torch.long)
+    for c in range(n_class):
+        cond = (targets == c)
+        ids_c = torch.arange(len(targets))[cond]
+        a = torch.randperm(len(ids_c))
+        to_keep = torch.cat((to_keep, ids_c[a[-shots:]]))
+        
+    preds[to_keep] = targets[to_keep]
+    return to_keep, preds
+
+def apply_lora(model, rank=16, alpha=32):
+
+    state_dict = model.state_dict()
+
+    for layer_index, resblock in enumerate(model.visual.transformer.resblocks):
+        if hasattr(resblock, 'attn'):        
+            multihead = resblock.attn
+            embed_dim = multihead.embed_dim
+            num_heads = multihead.num_heads
+
+            lora_multihead = loratorch.MultiheadAttention(embed_dim, num_heads, r=rank, lora_alpha=alpha)
+            resblock.attn = lora_multihead
+
+        if hasattr(resblock, 'mlp'):
+            linear = resblock.mlp
+            c_fc = linear.c_fc
+            c_proj = linear.c_proj
+            in_feats = c_fc.weight.shape[1]
+            out_feats = c_fc.weight.shape[0]
+
+            lora_fc = loratorch.Linear(in_feats, out_feats, r=rank, lora_alpha=alpha)
+
+            in_feats = c_proj.weight.shape[1]
+            out_feats = c_proj.weight.shape[0]
+            lora_proj = loratorch.Linear(in_feats, out_feats, r=rank, lora_alpha=alpha)
+
+            resblock.mlp.c_fc = lora_fc
+            resblock.mlp.c_proj = lora_proj
+
+    model.load_state_dict(state_dict, strict=False)
+    loratorch.mark_only_lora_as_trainable(model)
+
+    params = [p for p in model.parameters() if p.requires_grad]
+    
+    return model, params
+
+

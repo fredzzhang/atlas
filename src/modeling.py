@@ -32,8 +32,13 @@ class ImageEncoder(nn.Module):
         self.cache_dir = args.cache_dir
 
         if not keep_lang and hasattr(self.model, "transformer"):
-            delattr(self.model, "transformer")
-
+            delattr(self.model, "transformer")            
+            delattr(self.model, "token_embedding")
+            delattr(self.model, "ln_final")
+            delattr(self.model, "positional_embedding")
+            delattr(self.model, "text_projection")                                
+            delattr(self.model, "logit_scale")
+            
     def forward(self, images):
         assert self.model is not None
         return self.model.encode_image(images)
@@ -385,7 +390,7 @@ class ImageEncoder_(nn.Module):
         new_params = [dp + p for i, (dp, p) in enumerate(zip(dparams, self.params))]
         #c[self.buffer_index[i]].detach()
         buffers = [sum([b.to(c.device, non_blocking=True) * 0. for b, c in zip(bp, self.coef)]) for i, bp in enumerate(zip(*self.bufs))]
-        buffers = [(bp + b) for (bp, b) in zip(buffers, self.buffer)]
+        buffers = self.buffer#[(bp + b) for (bp, b) in zip(buffers, self.buffer)]
         return self.func(new_params, buffers, x)
 
     def __del_(self):

@@ -40,7 +40,7 @@ def parse_arguments():
         default='entropy',
         type=str,
         help="Loss function to use.",
-        choices=["entropy", "cross_entropy", "simclr", "simclr_entro", "barlow_simclr", 'simclr_mixup', "cb_entropy", "ssl_simclr", "trusted", "trusted_mixup", "entro_trusted", "ssl_simclr_trusted", "ssl_simclr_trusted_entro"]
+        choices=["entropy", "cross_entropy", "simclr", "simclr_entro", "barlow_simclr", 'simclr_mixup', "cb_entropy", "ssl_simclr", "trusted", "trusted_mixup", "entro_trusted", "ssl_simclr_trusted", "ssl_simclr_trusted_entro", "entropy_sar"]
     )
     parser.add_argument(
         "--lr-scheduler",
@@ -82,6 +82,12 @@ def parse_arguments():
         "--workers",
         type=int,
         default=8,
+    )
+    parser.add_argument(
+        "--rank",
+        type=int,
+        default=16,
+        help="LoRA rank."
     )
     parser.add_argument(
         "--num-grad-accumulation",
@@ -341,6 +347,12 @@ def parse_arguments():
         default=False,
         action='store_true',
         help="Evaluates ImageNet weights on OOD versions as well (test only)."
+    )
+    parser.add_argument(
+        "--softmax-coef",
+        default=False,
+        action='store_true',
+        help="Softmaxes the learned coefs."
     )
     parser.add_argument(
         "--init",

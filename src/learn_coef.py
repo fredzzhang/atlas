@@ -23,8 +23,9 @@ from src.heads import get_classification_head
 from src.modeling import ImageEncoder, ImageClassifier, ImageEncoder_, LinearizedModel_
 from src.linearize import LinearizedImageEncoder
 from src.task_vectors import LinearizedTaskVector, NonLinearTaskVector
-from src.utils import cosine_lr, cosine_annealing_lr, adjust_lr, TwoTransform, TwoAsymetricTransform, adjust_lr_lp, extract_datasets, IndexWrapper, update_transforms
+from src.utils import cosine_lr, cosine_annealing_lr, adjust_lr, TwoTransform, TwoAsymetricTransform, adjust_lr_lp, extract_datasets, IndexWrapper, update_transforms, get_n_shots
 from src.sampler import TwoStreamBatchSampler, SubsetSampler
+from src.sar import SAR, SAM
 
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -32,6 +33,7 @@ import copy
 from lightning.fabric import Fabric, seed_everything
 import minlora
 import gc
+
 
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -97,8 +99,7 @@ def ssl_loss_trusted(logits1: torch.Tensor, logits2: torch.Tensor, targets: torc
         return lam * F.cross_entropy(logits2, guessed_targets) + (1-lam) * F.cross_entropy(logits2, guessed_targets[index])
     trusted = trusted.to(logits1)
     #return (F.cross_entropy(logits2, guessed_targets, reduction='none')*trusted).sum() / trusted.sum()
-    return (F.cross_entropy(logits2, guessed_targets, reduction='none') * w).sum() / w.sum() 
-
+    return (F.cross_entropy(logits2, guessed_targets, reduction='none') * w).sum() / w.sum()
 
 def simclr_loss(logits1: torch.Tensor, logits2: torch.Tensor, mu:float=0.2) -> torch.Tensor:
     """Simclr contrastive loss (Npairs for now)"""
@@ -187,6 +188,8 @@ def main(rank, args):
             fname = os.path.join(fname, f"entropy")
         elif args.loss_fn == "simclr":
             fname = os.path.join(fname, f"simclr")
+        elif args.loss_fn == "entropy_sar":
+            fname = os.path.join(fname, f"entropy-sar")
         else:
             raise NotImplementedError("The current setting is not implemented")
 
@@ -215,13 +218,10 @@ def main(rank, args):
     splt = fname.split('/')
     for i in range(len(splt)-1):
         if not os.path.exists('/'.join(splt[:i+1])):
-            os.mkdir('/'.join(splt[:i+1]))
-
-    fname2 = f"results/results_{args.loss_fn}{'_layerwise' if args.layerwise else '_global'}{'_optitv' if args.optimally_random else ''}{'_attn' if args.attn else ''}{'_semi'+str(args.semi) if args.semi else ''}{'_tipft' if args.tip_ft else ''}{'_tiponly' if args.tip_only else ''}{'_tipcot' if args.tip_cot else ''}{'_lp' if args.lp else ''}{'_select'+str(args.select_tvs) if args.select_tvs else ''}{'_memeff' if args.mem_eff else ''}{'_random' if args.random else ''}{'_worse' if args.worse else ''}{'_blockwisesel' if args.blockwise_select else ''}_{datetime.today().strftime('%Y-%m-%d-%H:%M')}.txt"
-    
+            os.mkdir('/'.join(splt[:i+1]))    
     if not args.no_log and not args.merge:
         with open(fname, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
-        with open(fname2, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
+
         
     if args.merge:
         if not os.path.isfile(fname.replace('.txt', '.pth')):
@@ -232,7 +232,7 @@ def main(rank, args):
             except OSError:
                 pass
             with open(fname, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
-            with open(fname2, 'a') as f: f.writelines([f"Task vector results for loss {args.loss_fn} on datasets {list(args.datasets.keys())}. {len(task_vectors.keys())} task vectors\n"])
+
             coef_dict = {}
         else:
             coef_dict = torch.load(fname.replace('.txt', '.pth'))
@@ -260,13 +260,10 @@ def main(rank, args):
                 
         if not args.no_log:
             torch.save(coef_dict, fname.replace('.txt', '.pth'))
-            torch.save(coef_dict, fname2.replace('.txt', '.pth'))
             with open(fname, 'a') as f: f.writelines([f"{dataset}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}. Accuracy on OOD datasets {[acc[k] for k in acc.keys() if 'top1' in k]}", f"{best_coef}\n"])
-            with open(fname2, 'a') as f: f.writelines([f"{dataset}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}", f"{best_coef}\n"])
             
     if not args.no_log and len(args.datasets) > 0:
         with open(fname, 'a') as f: f.writelines([f"\nArguments {args}"])
-        with open(fname2, 'a') as f: f.writelines([f"\nArguments {args}"])
     
 def train(task_vectors, args):
     if args.loss_fn in ["simclr", "ssl_simclr_trusted", "entropy"]:#Test-time adaptations
@@ -289,7 +286,10 @@ def train(task_vectors, args):
     pool = [k for k, v in task_vectors.items() if orig_dataset != k]
     task_vectors = [v for k, v in task_vectors.items() if orig_dataset != k]
 
-    fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="16-mixed")
+    if "entropy_sar" in args.loss_fn:
+        fabric = Fabric(accelerator="cuda", devices=1, strategy="dp", precision="32")
+    else:
+        fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="16-mixed")
     fabric.launch()
     args.fabric = fabric
     
@@ -342,6 +342,7 @@ def train(task_vectors, args):
     #TO DO: implement lightning Fabric support for DDP and multi-gpu    
     loss_fn = {
         'entropy': softmax_entropy,
+        'entropy_sar': torch.nn.CrossEntropyLoss(),#Ununsed
         'cb_entropy': cb_softmax_entropy,
         'cross_entropy': torch.nn.CrossEntropyLoss(),
         'trusted': torch.nn.CrossEntropyLoss(),
@@ -387,6 +388,10 @@ def train(task_vectors, args):
     
     #Calling fabric.setup() causes a repetitive memory increase with each new call for new datasets. Once the GPU reaches max memory, a flush happens somewhere to free up everything. Then the cycle starts again. gc.collect();torch.cuda.empty_cache() prevents the increase in case you wish to run multiple processes on the same GPU.
     gc.collect();torch.cuda.empty_cache()
+    if "entropy_sar" in args.loss_fn:
+        optimizer = SAM(params, torch.optim.SGD, lr=args.lr, momentum=0.9)
+        model = SAR(model, optimizer, fabric)
+        
     model, optimizer = fabric.setup(model, optimizer)
     
     data_loader = fabric.setup_dataloaders(data_loader, use_distributed_sampler=False)
@@ -402,7 +407,7 @@ def train(task_vectors, args):
 
 
     model.eval()
-            
+        
     for epoch in range(max_ep):
 
         # Evaluate before each epoch
@@ -439,30 +444,8 @@ def train(task_vectors, args):
                 
             if ('trusted' in args.loss_fn and ((epoch >= 0 and 'entro' not in args.loss_fn) or epoch >= 1)) and not (args.semi and epoch >=1):
                 preprocess = data_loader.dataset.update_transforms(image_encoder.val_preprocess)
-                if args.semi:                    
-                    targets = - torch.ones(len(data_loader.dataset), dtype=torch.long)
-                    preds = - torch.ones(len(data_loader.dataset), dtype=torch.long)
-                    with torch.no_grad():
-                        for i, batch in enumerate(tqdm(data_loader, disable=args.no_tqdm)):
-                            batch = maybe_dictionarize(batch, index=True)
-                            targets[batch["index"]] = batch["labels"].to(targets.device)
-                            if i >= 1000:
-                                print("Too much data, breaking ...")
-                                break
-                            
-                    k = args.semi                    
-                    to_keep = torch.tensor([], dtype=torch.long)
-                    unlabeled = torch.tensor([], dtype=torch.long)                    
-                    for c in range(classification_head.out_features):
-                        cond = (targets == c)
-                        ids_c = torch.arange(len(targets))[cond]
-                        a = torch.randperm(len(ids_c))
-                        to_keep = torch.cat((to_keep, ids_c[a[-k:]]))
-                        unlabeled = torch.cat((unlabeled, ids_c[a[:-k]]))
-                        
-                    #unlabeled = torch.tensor([u for u in unlabeled if confs[u] > 0], dtype=torch.long)
-                    #unlabeled = torch.unique(unlabeled)
-                    preds[to_keep] = targets[to_keep]
+                if args.semi:
+                    to_keep, preds = get_n_shots(dataset.train_dataset, args.semi, classification_head.out_features, args)
                 else:
                     acc = eval_single_train_dataset(image_encoder, test_dataset, data_loader, args)
                     
@@ -498,10 +481,11 @@ def train(task_vectors, args):
                     unlabeled = torch.tensor([u for u in unlabeled if confs[u] > 0], dtype=torch.long)
                     unlabeled = torch.unique(unlabeled)
                     
+                    print("Correctness")
+                    print((preds[to_keep] == targets[to_keep]).sum() / len(to_keep))
+                    print((preds[unlabeled] == targets[unlabeled]).sum() / len(unlabeled))
+                    
                 data_loader.dataset.update_transforms(preprocess)
-                print("Correctness")
-                print((preds[to_keep] == targets[to_keep]).sum() / len(to_keep))
-                print((preds[unlabeled] == targets[unlabeled]).sum() / len(unlabeled))
                 
                 if 'ssl' in args.loss_fn:
                     low_confs = torch.arange(len(data_loader.dataset))[unlabeled]
@@ -606,19 +590,19 @@ def train(task_vectors, args):
 
                 if args.blockwise_select:
                     print("Blockwise selection of the task vectors")
+                    print(grad.shape)
                     selection = torch.argsort(-grad, dim=0)[:args.select_tvs]
                     new_tvs = [{} for _ in range(args.select_tvs)]
                     names = [[pool[s] for s in selection[:, i]] for i in range(len(selection[0]))]
-                    #for n in names:
-                    #    print(f'{n}\n')
-                    for j, k in enumerate(task_vectors[0].vector.keys()):
+                    for j, k in enumerate(model.image_encoder.names):
                         for i in range(args.select_tvs):
                             new_tvs[i][k] = task_vectors[selection[i, j]].vector[k]
-
+                            
                     updated_tvs = copy.deepcopy(task_vectors)
                     for i in range(args.select_tvs):
                         updated_tvs[i].vector = new_tvs[i]
-
+                        
+                    model = model.module #Fabric stuff
                     model.image_encoder.update_tvs(updated_tvs[:args.select_tvs])                    
                 else:
                     grad = grad.mean(1)
@@ -628,13 +612,13 @@ def train(task_vectors, args):
                     print(f"Highest {args.select_tvs} grads for dataset {test_dataset}: {[pool[i] for i in torch.argsort(grad)[-args.select_tvs:]]}, lowest {[pool[i] for i in torch.argsort(grad)[:args.select_tvs]]}")
                     #plt.show()
 
-                model = model.module #Fabric stuff
-                if args.worse:
-                    model.image_encoder.update_tvs([task_vectors[i] for i in torch.argsort(grad)[:args.select_tvs]])
-                elif args.random:
-                    model.image_encoder.update_tvs([task_vectors[i] for i in torch.randperm(len(task_vectors))[:args.select_tvs]])
-                else:
-                    model.image_encoder.update_tvs([task_vectors[i] for i in torch.argsort(grad)[-args.select_tvs:]])
+                    model = model.module #Fabric stuff
+                    if args.worse:
+                        model.image_encoder.update_tvs([task_vectors[i] for i in torch.argsort(grad)[:args.select_tvs]])
+                    elif args.random:
+                        model.image_encoder.update_tvs([task_vectors[i] for i in torch.randperm(len(task_vectors))[:args.select_tvs]])
+                    else:
+                        model.image_encoder.update_tvs([task_vectors[i] for i in torch.argsort(grad)[-args.select_tvs:]])
                 
             if args.finetuning_mode == "linear":
                 coef = model.image_encoder.model.coef
@@ -682,7 +666,7 @@ def train(task_vectors, args):
             model.image_encoder.model = model.image_encoder.model.tv_to_device()
         else:
             model.image_encoder = model.image_encoder.tv_to_device()
-            
+           
         for i, batch in enumerate(data_loader):
             start_time = time.time()
 
@@ -707,10 +691,14 @@ def train(task_vectors, args):
                 lam = max(lam, 1-lam)
                 index = torch.randperm(len(inputs))
                 inputs = lam * inputs + (1-lam) * inputs[index]
-                
-            if 'ssl' in args.loss_fn and 'entro' not in args.loss_fn:
+
+            if 'entropy_sar' in args.loss_fn:                              
+                _ = model(inputs)
+                continue
+            
+            elif 'ssl' in args.loss_fn and 'entro' not in args.loss_fn:
                 with torch.no_grad():
-                    logits = model(inputs)
+                    logits = model(inputs)                    
             elif 'simclr' in args.loss_fn:
                 logits, feats = model(inputs, return_features=True)
             else:
@@ -766,6 +754,11 @@ def train(task_vectors, args):
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
                 optimizer.step()
                 optimizer.zero_grad()
+                
+                if args.softmax_coef:
+                    model.module.image_encoder.coef = F.softmax(model.module.image_encoder.coef, dim=0)
+                    if args.attn:
+                        model.module.image_encoder.coef1 = F.softmax(model.module.image_encoder.coef, dim=0)
            
             batch_time = time.time() - start_time
 
@@ -952,7 +945,12 @@ def train(task_vectors, args):
                         tbar.set_description(f"Learning adaptor, epoch {epoch}/{args.epochs}, lr {optimizer.param_groups[0]['lr']:.3f}, loss {loss.item():.3f}, beta_alpha {adapter.beta_alpha[0]:.2f} {adapter.beta_alpha[1]:.2f}")
                     else:
                         tbar.set_description(f"Learning adaptor, epoch {epoch}/{args.epochs}, lr {optimizer.param_groups[0]['lr']:.3f}, loss {loss.item():.3f}")
-                    
+
+                    if args.softmax_coef and args.tip_cot:
+                        model.module.image_encoder.coef = F.softmax(model.module.image_encoder.coef, dim=0)
+                        if args.attn:
+                            model.module.image_encoder.coef1 = F.softmax(model.module.image_encoder.coef, dim=0)
+                            
                     fabric.backward(loss)
                     #loss.backward()
                     optimizer.step()
@@ -1102,7 +1100,7 @@ if __name__ == "__main__":
 
     args = parse_arguments()
 
-    epochs = 30
+    epochs = args.epochs #Go up to 30 for ResNets
     
     datasets = {
         "Cars": epochs,
