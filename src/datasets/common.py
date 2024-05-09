@@ -151,4 +151,16 @@ def get_dataloader(dataset, is_train, args, image_encoder=None):
         dataloader = DataLoader(feature_dataset, batch_size=args.batch_size, shuffle=is_train)
     else:        
         dataloader = dataset.train_loader if is_train else dataset.test_loader
+
+    if args.subsample is not None:
+        src = dataloader.dataset
+        subsample_size = int(len(src) * args.subsample)
+        lengths = [subsample_size, len(src) - subsample_size]
+        print(f"Subsampling dataloader from size {len(src)} to size {lengths[0]}.")
+        new_dataset, _ = torch.utils.data.random_split(src, lengths)
+        dataloader = DataLoader(
+            new_dataset,
+            batch_size=dataloader.batch_size,
+            num_workers=2,
+        )
     return dataloader

@@ -372,6 +372,19 @@ def parse_arguments():
         action='store_true',
         help="LoRA on attn layers only."
     )
+    parser.add_argument(
+        "--subsample",
+        type=float,
+        default=None,
+        help="Train on a percentage of the data."
+    )
+    
+    parser.add_argument(
+        "--pool-one",
+        default=False,
+        action='store_true',
+        help="Sequentially learn the coefs for each available TV."
+    )
     
     parsed_args = parser.parse_args()
     parsed_args.device = "cuda" if torch.cuda.is_available() else "cpu"

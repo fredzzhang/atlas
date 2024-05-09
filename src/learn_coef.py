@@ -245,21 +245,32 @@ def main(rank, args):
         print("=" * 100)
         print(f"Finetuning task vector coefficients of {args.model} on {dataset}")
         print("=" * 100)
-        
-        base_acc, best_acc, best_epoch, best_coef, acc = train(task_vectors, args)
 
-        coef_dict[dataset] = {'coefs': acc["coefs"], 'preds':acc["softmax"], 'targets':acc["targets"]}
-        print(acc.keys())
-        if args.tip_ft:
-            coef_dict[dataset]["adapter"] = acc["adapter"]
-            if args.lp:
-                coef_dict[dataset]["alpha_vec"] = acc["alpha_vec"]
-            else:
-                coef_dict[dataset]["beta_alpha"] = acc["beta_alpha"]
+        if args.pool_one:
+            pool_size = len(task_vectors)
+            keys = task_vectors.keys()
+            keys = [k for k in keys if k != dataset.replace('Val','')]
+            for p in range(pool_size):
+                base_acc, best_acc, best_epoch, best_coef, acc = train({keys[p]: task_vectors[keys[p]]}, args)
                 
-        if not args.no_log:
-            torch.save(coef_dict, fname.replace('.txt', '.pth'))
-            with open(fname, 'a') as f: f.writelines([f"{dataset}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}. Accuracy on OOD datasets {[acc[k] for k in acc.keys() if 'top1' in k]}", f"{best_coef}\n"])
+                with open(fname, 'a') as f: f.writelines([f"{dataset} - TV {keys[p]}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}. Accuracy on OOD datasets {[acc[k] for k in acc.keys() if 'top1' in k]}", f"{best_coef}\n"])
+            
+        else:
+            base_acc, best_acc, best_epoch, best_coef, acc = train(task_vectors, args)
+            
+            
+            coef_dict[dataset] = {'coefs': acc["coefs"], 'preds':acc["softmax"], 'targets':acc["targets"]}
+            print(acc.keys())
+            if args.tip_ft:
+                coef_dict[dataset]["adapter"] = acc["adapter"]
+                if args.lp:
+                    coef_dict[dataset]["alpha_vec"] = acc["alpha_vec"]
+                else:
+                    coef_dict[dataset]["beta_alpha"] = acc["beta_alpha"]
+
+            if not args.no_log:
+                torch.save(coef_dict, fname.replace('.txt', '.pth'))
+                with open(fname, 'a') as f: f.writelines([f"{dataset}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}. Accuracy on OOD datasets {[acc[k] for k in acc.keys() if 'top1' in k]}", f"{best_coef}\n"])
             
     if not args.no_log and len(args.datasets) > 0:
         with open(fname, 'a') as f: f.writelines([f"\nArguments {args}"])
@@ -282,6 +293,7 @@ def train(task_vectors, args):
     orig_dataset = test_dataset.split('Val')[0]
     if orig_dataset == "Webvision":
         orig_dataset = "ImageNet"
+        
     pool = [k for k, v in task_vectors.items() if orig_dataset != k]
     task_vectors = [v for k, v in task_vectors.items() if orig_dataset != k]
 

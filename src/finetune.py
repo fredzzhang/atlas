@@ -55,11 +55,11 @@ def finetune(args):
         else os.path.join(args.save, train_dataset, "zeroshot.pt")
     )
     
-    if os.path.exists(zs_path) and os.path.exists(ft_path) and not args.lora and args.semi is None:
+    if os.path.exists(zs_path) and os.path.exists(ft_path) and not args.lora and args.semi is None and args.subsample is None:
         print(f"Skipping fine-tuning because {ft_path} exists.")
         return zs_path, ft_path
     
-    if os.path.exists(zs_path) and os.path.exists(lora_path) and args.lora and args.semi is None:
+    if os.path.exists(zs_path) and os.path.exists(lora_path) and args.lora and args.semi is None and args.subsample is None:
         print(f"Skipping fine-tuning because {lora_path} exists.")
         return zs_path, lora_path
 
@@ -126,7 +126,7 @@ def finetune(args):
     ddp_model, optimizer = fabric.setup(model, optimizer)
 
     # Saving zero-shot model
-    if args.save is not None and (fabric.global_rank == 0) and args.semi is None:
+    if args.save is not None and (fabric.global_rank == 0) and args.semi is None and args.subsample is None:
         os.makedirs(ckpdir, exist_ok=True)
         model_path = (
             os.path.join(ckpdir, "linear_zeroshot.pt")
@@ -222,7 +222,7 @@ def finetune(args):
         if False:
             eval_single_dataset(image_encoder, train_dataset, dataset, args)
             
-    if args.save is not None and (fabric.global_rank == 0) and args.semi is None:
+    if args.save is not None and (fabric.global_rank == 0) and args.semi is None and args.subsample is None:
         zs_path = (
             os.path.join(ckpdir, "linear_zeroshot.pt")
             if linearized_finetuning
@@ -241,7 +241,7 @@ def finetune(args):
             image_encoder.save(ft_path)
             
     metrics = eval_single_dataset(image_encoder, train_dataset, dataset, args, test=True)
-    if args.semi is not None:
+    if args.semi is not None or args.subsample is not None: 
         with open(os.path.join(args.fname, str(args.seed), "results.txt"), 'a') as f:
             f.writelines([f"{train_dataset.replace('Val','')}\n", f"Base accuracy 0.0, best accuracy {metrics['top1']}\n"])
     
