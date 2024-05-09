@@ -145,7 +145,7 @@ def main(rank, args):
     for i, dataset in enumerate(pool):
         if args.lora:
             pretrained_checkpoint = f"{args.save}/{dataset}Val/zeroshot.pt"
-            finetuned_checkpoint = f"{args.save}/{dataset}Val/lora_{args.rank}.pt"
+            finetuned_checkpoint = f"{args.save}/{dataset}Val/lora_{args.rank}{'_attn_only' if args.attn_only else ''}{'_mlp_only' if args.mlp_only else ''}.pt"
             task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint, scale=args.scale, lora=args.lora)
         elif args.hugg:
             pretrained_checkpoint = f"{args.save}/CarsVal/zeroshot.pt"
