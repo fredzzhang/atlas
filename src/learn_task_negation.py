@@ -23,6 +23,9 @@ from src.heads import get_classification_head
 from src.datasets.common import get_dataloader, maybe_dictionarize
 from src.distributed import cleanup_ddp, distribute_loader, is_main_process, setup_ddp
 
+def lp_reg(x, p=None, gamma=0.5) -> torch.Tensor:
+    return 0 if p is None else gamma * torch.norm(x, p=p, dim=0).mean()
+
 def main(rank, args):
 
     setup_ddp(rank, args.world_size, port=args.port)
@@ -176,6 +179,9 @@ def main(rank, args):
                 """Gradient ascent on the target dataset,
                 gradient descent on the control dataset."""
                 loss = -loss_tgt + loss_ctr
+                # Apply regularisation if needed.
+                reg = lp_reg(coef, args.lp_reg)
+                loss = loss + reg
                 # Scale the loss
                 loss = loss / args.num_grad_accumulation
 
