@@ -25,8 +25,7 @@ from src.modeling import ImageClassifier, ImageEncoder
 from src.utils import LabelSmoothing, cosine_lr, get_n_shots, apply_lora
 from lightning.fabric import Fabric, seed_everything
 
-def finetune(rank, args):
-    setup_ddp(rank, args.world_size, port=args.port)
+def finetune(args):
 
     train_dataset = args.train_dataset
     ckpdir = os.path.join(args.save, train_dataset)
@@ -246,9 +245,8 @@ def finetune(rank, args):
     metrics = eval_single_dataset(image_encoder, train_dataset, dataset, args, test=True)
     if args.semi is not None:
         with open(os.path.join(args.fname, str(args.seed), "results.txt"), 'a') as f:
-            f.writelines([f"{train_dataset.replace('Val','')}\n", f"Base accuracy 0.0, best accuracy {metrics['top1']}"])
+            f.writelines([f"{train_dataset.replace('Val','')}\n", f"Base accuracy 0.0, best accuracy {metrics['top1']}\n"])
     
-    cleanup_ddp()
     return zs_path, ft_path
 
 
@@ -321,5 +319,6 @@ if __name__ == "__main__":
         
         seed = int(torch.exp(torch.tensor(args.seed)) * 3.1415 * 1000)
         seed_everything(seed)
+
+        finetune(args)
         
-        torch.multiprocessing.spawn(finetune, args=(args,), nprocs=args.world_size)
