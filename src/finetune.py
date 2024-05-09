@@ -17,7 +17,6 @@ import torch
 from src.args import parse_arguments
 from src.datasets.common import get_dataloader, maybe_dictionarize
 from src.datasets.registry import get_dataset
-from src.distributed import cleanup_ddp, distribute_loader, is_main_process, setup_ddp
 from src.eval import eval_single_dataset
 from src.heads import get_classification_head
 from src.linearize import LinearizedImageEncoder
@@ -99,9 +98,14 @@ def finetune(args):
         preprocess_fn,
         location=args.data_location,
         batch_size=args.batch_size,
-    )    
+    )
+            
+    import gc;gc.collect();torch.cuda.empty_cache()
+    fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="16-mixed")
+    fabric.launch()
+    args.fabric = fabric
 
-    if args.lora and is_main_process():
+    if args.lora and (fabric.global_rank == 0):
         ori_params = sum(p.numel() for p in model.parameters() if p.requires_grad)        
         model.image_encoder.model, params = apply_lora(model.image_encoder.model, rank=args.rank, mlp=not args.attn_only, attn=not args.mlp_only)
         print(f"Training {sum(p.numel() for p in params if p.requires_grad)} LoRA params ({sum(p.numel() for p in params if p.requires_grad)/ori_params*100.:.2f}%)")
@@ -119,16 +123,10 @@ def finetune(args):
 
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
 
-        
-    import gc;gc.collect();torch.cuda.empty_cache()
-    fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="16-mixed")
-    fabric.launch()
-    args.fabric = fabric
-
     ddp_model, optimizer = fabric.setup(model, optimizer)
 
     # Saving zero-shot model
-    if args.save is not None and is_main_process() and args.semi is None:
+    if args.save is not None and (fabric.global_rank == 0) and args.semi is None:
         os.makedirs(ckpdir, exist_ok=True)
         model_path = (
             os.path.join(ckpdir, "linear_zeroshot.pt")
@@ -138,7 +136,7 @@ def finetune(args):
         if not args.lora:
             ddp_model.image_encoder.save(model_path)
 
-    if args.semi is not None and is_main_process():
+    if args.semi is not None and (fabric.global_rank == 0):
         to_keep, preds = get_n_shots(dataset.train_dataset, args.semi, classification_head.out_features, args)
 
         print(f"Got {len(to_keep)} trusted samples")
@@ -197,7 +195,7 @@ def finetune(args):
             if (
                 args.checkpoint_every > 0
                 and step % args.checkpoint_every == 0
-                and is_main_process()
+                and (fabric.global_rank == 0)
             ):
                 print("Saving checkpoint.")
                 model_path = (
@@ -210,7 +208,7 @@ def finetune(args):
             if (
                 step % print_every == 0
                 and ((i + 1) % args.num_grad_accumulation == 0)
-                and is_main_process()
+                and (fabric.global_rank == 0)
             ):
                 percent_complete = 100 * i / len(data_loader)
                 print(
@@ -224,7 +222,7 @@ def finetune(args):
         if False:
             eval_single_dataset(image_encoder, train_dataset, dataset, args)
             
-    if args.save is not None and is_main_process() and args.semi is None:
+    if args.save is not None and (fabric.global_rank == 0) and args.semi is None:
         zs_path = (
             os.path.join(ckpdir, "linear_zeroshot.pt")
             if linearized_finetuning
