@@ -23,6 +23,9 @@ from src.heads import get_classification_head
 from src.datasets.common import get_dataloader, maybe_dictionarize
 from src.distributed import cleanup_ddp, distribute_loader, is_main_process, setup_ddp
 
+def lp_reg(x, p=None, gamma=0.5) -> torch.Tensor:
+    return 0 if p is None else gamma * torch.norm(x, p=p, dim=0).mean()
+
 def main(rank, args):
 
     setup_ddp(rank, args.world_size, port=args.port)
@@ -102,7 +105,7 @@ def main(rank, args):
     if args.print_every * 10 < num_batches:
         print_every = int(num_batches / 10)
     elif args.print_every * 4 > num_batches:
-        print_every = int(num_batches / 4)
+        print_every = max(int(num_batches / 4), 1)
     else:
         print_every = args.print_every
 
@@ -129,6 +132,9 @@ def main(rank, args):
         head_path = os.path.join(ckpdir, "learned_negations.pt")
         log_path = os.path.join(args.save, "learned_negations.json")
         coef = ddp_model.module.image_encoder.coef
+    if args.subsample is not None:
+        head_path = head_path[:-3] + f"_{args.subsample*100:.0f}perc.pt"
+        log_path = log_path[:-5] + f"_{args.subsample*100:.0f}perc.json"
 
     scaler = GradScaler()
     tgt_zs_acc = args.zs_acc[tgt_dataset]
@@ -165,19 +171,23 @@ def main(rank, args):
             inputs = torch.cat([batch["images"].cuda(), ctr_batch["images"].cuda()])
             data_time = time.time() - start_time
             
+            split = [len(batch["images"]), len(ctr_batch["images"])]
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                logits = ddp_model(inputs, [int(args.batch_size / 2 / args.world_size)] * 2)
+                logits = ddp_model(inputs, split)
                 labels = [batch["labels"].cuda(), ctr_batch["labels"].cuda()]
                 loss_tgt, loss_ctr = [loss_fn(x, y) for x, y in zip(logits, labels)]
                 """Gradient ascent on the target dataset,
                 gradient descent on the control dataset."""
                 loss = -loss_tgt + loss_ctr
+                # Apply regularisation if needed.
+                reg = lp_reg(coef, args.lp_reg)
+                loss = loss + reg
                 # Scale the loss
                 loss = loss / args.num_grad_accumulation
 
             scaler.scale(loss).backward()
 
-            if (i + 1) % args.num_grad_accumulation == 0:
+            if i % args.num_grad_accumulation == 0:
 
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
                 scaler.step(optimizer)
@@ -188,12 +198,12 @@ def main(rank, args):
 
             if (
                 step % print_every == 0
-                and ((i + 1) % args.num_grad_accumulation == 0)
+                and (i % args.num_grad_accumulation == 0)
                 and is_main_process()
             ):
-                percent_complete = 100 * (i + 1) / len(ddp_tgt_loader)
+                percent_complete = 100 * i / len(ddp_tgt_loader)
                 print(
-                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(ddp_tgt_loader)}]\t"   # noqa: E501
+                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i}/{len(ddp_tgt_loader)}]\t"       # noqa: E501
                     f"Loss (tgt.): {loss_tgt.item():.6f}\tLoss (ctr.): {loss_ctr.item():.6f}\t"         # noqa: E501
                     f"Data (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",                            # noqa: E501
                     flush=True,

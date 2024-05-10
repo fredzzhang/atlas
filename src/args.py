@@ -56,6 +56,12 @@ def parse_arguments():
         help="Use different coefficients on different parameter blocks."
     )
     parser.add_argument(
+        "--subsample",
+        default=None,
+        type=float,
+        help="Percentage of data to subsample."
+    )
+    parser.add_argument(
         "--partition",
         default="trainval",
         choices=["trainval", "traintest"],

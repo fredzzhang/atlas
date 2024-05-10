@@ -104,6 +104,8 @@ elif args.finetuning_mode == "linear":
     save_file = f"{args.save}/linear_negations.json"
 elif args.finetuning_mode == "posthoc":
     save_file = f"{args.save}/posthoc_negations.json"
+if args.subsample is not None:
+    save_file = save_file[:-5] + f"_{args.subsample*100:.0f}perc.json"
 
 with open(save_file, "w") as f:
     json.dump(negation_accuracies, f, indent=4)
