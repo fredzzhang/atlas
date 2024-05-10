@@ -142,8 +142,8 @@ def get_dataloader(dataset, is_train, args, image_encoder=None):
     else:
         dataloader = dataset.train_loader if is_train else dataset.test_loader
 
-    # Subsample a percentage of the data if needed
-    if args.subsample is not None:
+    # Subsample a percentage of the training data if needed
+    if args.subsample is not None and is_train:
         src = dataloader.dataset
         subsample_size = int(len(src) * args.subsample)
         lengths = [subsample_size, len(src) - subsample_size]
