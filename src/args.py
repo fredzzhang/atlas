@@ -386,6 +386,31 @@ def parse_arguments():
         help="Sequentially learn the coefs for each available TV."
     )
     
+    parser.add_argument(
+        "--row-wise",
+        default=False,
+        action='store_true',
+        help="1 Coef per row"
+    )
+    parser.add_argument(
+        "--col-wise",
+        default=False,
+        action='store_true',
+        help="1 Coef per col"
+    )
+    parser.add_argument(
+        "--persistant-workers",
+        default=False,
+        action='store_true',
+        help="Persistant dataloader workers for concurrent running"
+    )
+    parser.add_argument(
+        "--random-wise",
+        default=None,
+        type=int,
+        help="Number of parameter per layer (randomly assigned)."
+    )
+    
     parsed_args = parser.parse_args()
     parsed_args.device = "cuda" if torch.cuda.is_available() else "cpu"
 

@@ -67,7 +67,6 @@ class ImageEncoder(nn.Module):
         )
         self.model.load_from_state_dict(state_dict)
 
-
 class ClassificationHead(nn.Linear):
     def __init__(self, normalize, weights, biases=None):
         output_size, input_size = weights.shape
@@ -212,6 +211,8 @@ class LinearizedModel_(nn.Module):
             del self.coef1
         
         self.coef1 = []
+                
+        
         if self.attn:
             self.coef = nn.Parameter(torch.zeros(len(task_vectors), len(self.params0)))
             self.coef1 = nn.Parameter(torch.zeros(len(task_vectors), len(self.params0), 3))
@@ -269,6 +270,7 @@ class ImageEncoder_(nn.Module):
         # NOTE This is important to avoid the following error
         # NotImplementedError: Cannot copy out of meta tensor; no data!
         self.func = lambda p, b, x: self.base_func[0](p, b, x)
+        self.args = args
         
         self.params = nn.ParameterList(params)
         self.attn_l = []
@@ -333,7 +335,55 @@ class ImageEncoder_(nn.Module):
             del self.coef1
         
         self.coef1 = []
-        if self.attn:
+        
+        if self.args.row_wise:
+            self.coef = []
+            for n, p in zip(self.names, self.params):
+
+                if len(p.shape) == 1:
+                    param = nn.Parameter(torch.zeros(len(task_vectors)))
+                elif "conv" in n or n == "model.visual.proj":
+                    param = nn.Parameter(torch.zeros((len(task_vectors), p.shape[0])))
+                elif "c_proj" in n:
+                    param = nn.Parameter(torch.zeros((len(task_vectors), p.shape[0])))
+                else:
+                    param = nn.Parameter(torch.zeros((len(task_vectors), p.shape[1])))
+                    
+                self.register_parameter(n.replace('.','_'), param)
+                self.coef.append(param)
+        elif self.args.col_wise:
+            self.coef = []
+            for n, p in zip(self.names, self.params):
+                if len(p.shape) == 1:
+                    param = nn.Parameter(torch.zeros(len(task_vectors)))
+                elif "conv" in n or n == "model.visual.proj":
+                    param = nn.Parameter(torch.zeros((len(task_vectors), p.shape[0])))
+                elif "c_proj" in n:
+                    param = nn.Parameter(torch.zeros((len(task_vectors), p.shape[1])))
+                else:
+                    param = nn.Parameter(torch.zeros((len(task_vectors), p.shape[0])))
+                    
+                self.register_parameter(n.replace('.','_'), param)
+                self.coef.append(param)
+        elif self.args.random_wise is not None:
+            self.coef = []
+            self.mask_mats = []
+            for n, p in zip(self.names, self.params):                
+                if "conv" in n:
+                    mask = torch.randint(self.args.random_wise, (p.shape[0],))
+                else:
+                    mask = torch.randint(self.args.random_wise, p.shape)
+                
+                if "attn.in_proj" in n and False:#To implement
+                    param = nn.Parameter(torch.zeros(len(task_vectors), self.args.random_wise, 3))
+                else:
+                    param = nn.Parameter(torch.zeros(len(task_vectors), self.args.random_wise))
+                    
+                self.register_parameter(n.replace('.','_'), param)
+                self.coef.append(param)
+                self.mask_mats.append([sum([torch.where(mask==i, 1, 0)*param[j, i] for i in  range(self.args.random_wise)]) for j in range(len(task_vectors))])
+            
+        elif self.attn:
             self.coef = nn.Parameter(torch.zeros(len(task_vectors), len(self.params)))
             self.coef1 = nn.Parameter(torch.zeros(len(task_vectors), len(self.params), 3))
         elif self.layerwise:
@@ -354,7 +404,11 @@ class ImageEncoder_(nn.Module):
     def _apply(self, fn):
 
         new_self = super()._apply(fn=fn)
-        new_self.buffer = tuple(x.to(new_self.coef) for x in new_self.buffer)
+        if isinstance(new_self.coef, list):
+            new_self.coef = [fn(c) for c in new_self.coef]
+            new_self.buffer = tuple(fn(x) for x in new_self.buffer)
+        else:
+            new_self.buffer = tuple(fn(x) for x in new_self.buffer)
         return new_self
     
     def tv_to_device(self):
@@ -363,24 +417,98 @@ class ImageEncoder_(nn.Module):
         Usefull to limit memory usage when selecting task vectors/cpu mode
         '''
         if not self.tv_cpu:
-            self.dparams = [[dp.to(self.coef) for dp in dparam] for dparam in self.dparams]
-            self.bufs = [[bp.to(self.coef) for bp in bparam] for bparam in self.bufs]
+            if isinstance(self.coef, list):
+                self.dparams = [[dp.to(self.coef[0]) for dp in dparam] for dparam in self.dparams]
+                self.bufs = [[bp.to(self.coef[0]) for bp in bparam] for bparam in self.bufs]            
+            else:
+                self.dparams = [[dp.to(self.coef) for dp in dparam] for dparam in self.dparams]
+                self.bufs = [[bp.to(self.coef) for bp in bparam] for bparam in self.bufs]            
             
         return self        
         
     def __call__(self, x, zero_shot=False) -> torch.Tensor:
         if zero_shot:
             return self.func(self.params, self.buffer, x)
-        
-        if self.attn:
+
+        if self.args.row_wise:
+            dparams = []
+            for i, dp in enumerate(zip(*self.dparams)):
+                dparam = []
+                n = self.names[i]
+                c = self.coef[i]
+                for j, p in enumerate(dp):
+                    if len(p.shape) == 1:
+                        dparam.append(p * c[j])
+                    elif "conv" in n:
+                        dparam.append(p * c[j][:, None, None, None])
+                    elif "c_proj" in n:
+                        dparam.append(p * c[j][:, None])
+                    elif n == "model.visual.proj":
+                        dparam.append(p * c[j][:, None])
+                    else:
+                        dparam.append(p * c[j, None])
+                    
+
+                dparams.append(sum(dparam))
+                
+        elif self.args.col_wise:
+            dparams = []
+            for i, dp in enumerate(zip(*self.dparams)):
+                dparam = []
+                n = self.names[i]
+                c = self.coef[i]
+                for j, p in enumerate(dp):
+                    if len(p.shape) == 1:
+                        dparam.append(p * c[j])
+                    elif "conv" in n:
+                        dparam.append(p * c[j][:, None, None, None])
+                    elif "c_proj" in n:
+                        dparam.append(p * c[j][None, :])
+                    elif n == "model.visual.proj":
+                        dparam.append(p * c[j][:, None])
+                    else:
+                        dparam.append(p * c[j][:, None])                  
+
+                dparams.append(sum(dparam))
+        elif self.args.random_wise is not None:
+            dparams = []
+            for i, dp in enumerate(zip(*self.dparams)):
+                dparam = []
+                n = self.names[i]
+                c = self.coef[i]
+                mask = self.mask_mats[i]
+                dparams.append(sum([p*mask[j] for f in range(len(mask))]))
+                """
+                for j, p in enumerate(dp):
+                    
+
+                    for l, ci in enumerate(c[j]):
+                        if 'attn.in_proj' in n and False:#To implement
+                            p[mask[l]] *= ci
+                        else:
+                            p[mask[l]] *= ci                        
+                    
+                    if "conv" in n:
+                        dpar = [p*mask[l].to(p)[:, None, None, None]*ci for l, ci in enumerate(c[j])]
+                    elif 'attn.in_proj' in n: #To implement
+                        div = len(p) // 3
+                        dpar = [torch.cat((p[:div]*mask[l][:div].to(p)*ci[0], p[div:2*div]*mask[l][div:2*div].to(p)*ci[1], p[2*div:]*mask[l][2*div:].to(p)*ci[2])) for l, ci in enumerate(c[j])]
+                    else:
+                        dpar = [p*mask[l].to(p)*ci for l, ci in enumerate(c[j])]
+                   
+                                                
+                    dparam.append(p)
+                dparams.append(sum(dparam))
+                """ 
+                                
+        elif self.attn:
             dparams = [sum([p.to(c.device, non_blocking=True) * c[i] for p, c in zip(dp, self.coef)]) if i not in self.attn_l else sum([torch.cat((p[:len(p)//3].to(c.device, non_blocking=True) * c[i, 0], p[len(p)//3:2*len(p)//3].to(c.device, non_blocking=True) * c[i, 1], p[2*len(p)//3:len(p)].to(c.device, non_blocking=True) * c[i, 2]))  for p, c in zip(dp, self.coef1)]) for i, dp in enumerate(zip(*self.dparams))]
         elif self.layerwise:            
             dparams = [sum([p.to(c.device, non_blocking=True) * c[i] for p, c in zip(dp, self.coef)]) for i, dp in enumerate(zip(*self.dparams))]
         else:
             dparams = [sum([p.to(c.device, non_blocking=True) * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
-            
+
         new_params = [dp + p for i, (dp, p) in enumerate(zip(dparams, self.params))]
-        #c[self.buffer_index[i]].detach()
         buffers = [sum([b.to(c.device, non_blocking=True) * 0. for b, c in zip(bp, self.coef)]) for i, bp in enumerate(zip(*self.bufs))]
         buffers = self.buffer#[(bp + b) for (bp, b) in zip(buffers, self.buffer)]
         return self.func(new_params, buffers, x)

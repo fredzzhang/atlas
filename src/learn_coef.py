@@ -344,7 +344,7 @@ def train(task_vectors, args):
     else:
         index_dataset = IndexWrapper(dataset.train_dataset)
         
-    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
+    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, persistent_workers=args.persistant_workers)
 
     # Override shuffle to True
     data_loader.shuffle = True
@@ -365,7 +365,9 @@ def train(task_vectors, args):
         'simclr_mixup': simclr_mixup_loss,
     }[args.loss_fn]
 
-    params = [p for p in model.parameters() if p.requires_grad]
+    params = [p for p in model.parameters() if p.requires_grad]        
+    print(f"Got {sum([p.numel() for p in params])} trainable parameters")
+    
     if args.tune_clip:
         optimizer = torch.optim.AdamW([{'params': [model.image_encoder.coef] + [model.image_encoder.coef1]}, {'params': model.image_encoder.params}], lr=args.lr, weight_decay=args.wd)
     else:
@@ -419,6 +421,12 @@ def train(task_vectors, args):
 
 
     model.eval()
+    gc.collect();torch.cuda.empty_cache()#Same as above, this memory problem appears to be related to moving TVs to cuda.
+    if args.finetuning_mode == "linear":
+        model.image_encoder.model = model.image_encoder.model.tv_to_device()
+    else:
+        model.image_encoder = model.image_encoder.tv_to_device()
+
         
     for epoch in range(max_ep):
 
@@ -437,19 +445,26 @@ def train(task_vectors, args):
                 acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, test=False)
             
             string = 'Coefficients:\t|'
-            for c in coef.data:
-                if args.layerwise:
-                    string += f"`{c.mean():.4f}`|"
-                else:                    
-                    string += f"`{c:.4f}`|"
+            if isinstance(coef, list):
+                for i in range(len(coef[0])):
+                    string += f"`{sum([c[i].mean() for c in coef]):.4f}`|"
+            else:
+                for c in coef.data:
+                    if args.layerwise:
+                        string += f"`{c.mean():.4f}`|"
+                    else:                    
+                        string += f"`{c:.4f}`|"
             print(string)
             if acc['top1'] > best_acc and epoch > 0:
                 best_acc = acc['top1']
                 best_epoch = epoch
                 best_coefs = string
-                coefs = coef.data.detach().cpu()
-                if args.attn:
-                    coefs1 = coef1.data.detach().cpu()
+                if isinstance(coef, list):
+                    coefs = [c.data.detach().cpu() for c in coef]
+                else:
+                    coefs = coef.data.detach().cpu()
+                    if args.attn:
+                        coefs1 = coef1.data.detach().cpu()
 
             if epoch == 0:
                 base_acc = acc['top1']
@@ -503,7 +518,7 @@ def train(task_vectors, args):
                     low_confs = torch.arange(len(data_loader.dataset))[unlabeled]
                     print(f"Got {len(to_keep)} trusted and {len(unlabeled)} untrusted samples")
                     sampler = TwoStreamBatchSampler(low_confs, to_keep, args.batch_size)
-                    data_loader = torch.utils.data.DataLoader(index_dataset, batch_sampler=sampler, num_workers=args.workers)
+                    data_loader = torch.utils.data.DataLoader(index_dataset, batch_sampler=sampler, num_workers=args.workers, persistent_workers=args.persistant_workers)
                 else:
                     print(f"Got {len(to_keep)} trusted samples")
                     r = len(to_keep) / args.batch_size
@@ -513,7 +528,7 @@ def train(task_vectors, args):
                         print(f"Oversampling {over_sampling} times")
                         to_keep = torch.cat([to_keep] * over_sampling)
                     sampler = torch.utils.data.SubsetRandomSampler(to_keep)
-                    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=sampler, num_workers=args.workers)                    
+                    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=sampler, num_workers=args.workers, persistent_workers=args.persistant_workers)                    
                 num_batches = len(data_loader)
                 data_loader = fabric.setup_dataloaders(data_loader, use_distributed_sampler=False)
                 
@@ -672,13 +687,7 @@ def train(task_vectors, args):
 
         if args.tune_clip:# or 'RN' in args.model:
             model.train() #Compute batch norm stats
-            
-        gc.collect();torch.cuda.empty_cache()#Same as above, this memory probelm appears to be related to moving TVs to cuda.
-        if args.finetuning_mode == "linear":
-            model.image_encoder.model = model.image_encoder.model.tv_to_device()
-        else:
-            model.image_encoder = model.image_encoder.tv_to_device()
-           
+                       
         for i, batch in enumerate(data_loader):
             start_time = time.time()
 
@@ -809,21 +818,27 @@ def train(task_vectors, args):
             acc = eval_single_dataset(image_encoder, test_dataset, dataset, args)
             
         string = 'Coefficients:\t|'
-        for c in coef.data:
-            if args.layerwise:
-                string += f"`{c.mean():.4f}`|"
-            else:                    
-                string += f"`{c:.4f}`|"
-                
-        if acc['top1'] > best_acc:
-            best_acc = acc['top1']
-            best_coefs = string
-            best_epoch = epoch
-            coefs = coef.data.detach().cpu()
-            if args.attn:
-                coefs1 = coef1.data.detach().cpu()
-            
+        if isinstance(coef, list):
+            for i in range(len(coef[0])):
+                string += f"`{sum([c[i].mean() for c in coef]):.4f}`|"
+        else:
+            for c in coef.data:
+                if args.layerwise:
+                    string += f"`{c.mean():.4f}`|"
+                else:                    
+                    string += f"`{c:.4f}`|"
         print(string)
+        
+        if acc['top1'] > best_acc and epoch > 0:
+            best_acc = acc['top1']
+            best_epoch = epoch
+            best_coefs = string
+            if isinstance(coef, list):
+                coefs = [c.data.detach().cpu() for c in coef]
+            else:
+                coefs = coef.data.detach().cpu()
+                if args.attn:
+                    coefs1 = coef1.data.detach().cpu()                   
         
         if args.tip_ft:
             fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="32")
@@ -836,7 +851,7 @@ def train(task_vectors, args):
                 to_keep_u = torch.unique(to_keep)
                 to_keep_u.sort()
                 subset_t = SubsetSampler(to_keep_u)
-                data_loader_t = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=subset_t, num_workers=args.workers)
+                data_loader_t = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=subset_t, num_workers=args.workers, persistent_workers=args.persistant_workers)
 
                 aug_n = 1
                 tbar = tqdm(range(aug_n), disable=args.no_tqdm)
@@ -877,9 +892,9 @@ def train(task_vectors, args):
                 best_alpha = alpha_vec.cpu().clone()
 
             if 'ssl' in args.loss_fn:
-                data_loader = torch.utils.data.DataLoader(index_dataset, batch_sampler=sampler, num_workers=args.workers)
+                data_loader = torch.utils.data.DataLoader(index_dataset, batch_sampler=sampler, num_workers=args.workers, persistent_workers=args.persistant_workers)
             else:
-                data_loader = torch.utils.data.DataLoader(index_dataset, sampler=sampler, num_workers=args.workers, batch_size=args.batch_size)
+                data_loader = torch.utils.data.DataLoader(index_dataset, sampler=sampler, num_workers=args.workers, batch_size=args.batch_size, persistent_workers=args.persistant_workers)
                 
             if args.lp:
                 if args.tip_cot:
@@ -904,7 +919,11 @@ def train(task_vectors, args):
                 best_acc = acc['top1']
                 best_coefs = string
                 best_epoch = epoch
-                coefs = coef.data.detach().cpu()
+                if isinstance(coef, list):
+                    coefs = [c.data.detach().cpu() for c in coef]
+                else:
+                    coefs = coef.data.detach().cpu()
+                    
                 beta_alpha = adapter.beta_alpha
                 if args.attn:
                     coefs1 = coef1.data.detach().cpu()
@@ -1050,7 +1069,10 @@ def train(task_vectors, args):
                         best_acc = acc['top1']
                         best_coefs = string
                         best_epoch = epoch
-                        coefs = coef.data.detach().cpu()
+                        if isinstance(coef, list):
+                            coefs = [c.data.detach().cpu() for c in coef]
+                        else:
+                            coefs = coef.data.detach().cpu()
                         if not args.lp:
                             beta_alpha = adapter.beta_alpha
                         if args.attn:
@@ -1060,7 +1082,10 @@ def train(task_vectors, args):
                             best_alpha = alpha_vec.cpu().clone()
 
     #Load best coefs
-    if args.finetuning_mode == "linear":
+    if isinstance(model.image_encoder.coef, list):
+        for i in range(len(model.image_encoder.coef)):
+            model.image_encoder.coef[i].data = coefs[i].to(model.image_encoder.coef[i].data)            
+    elif args.finetuning_mode == "linear":
         model.image_encoder.model.coef.data = coefs.to(model.image_encoder.model.coef.data)
         if args.attn:
             model.image_encoder.model.coef1.data = coefs1.to(model.image_encoder.model.coef.data)

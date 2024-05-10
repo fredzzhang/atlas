@@ -181,7 +181,7 @@ def eval_single_train_dataset(image_encoder, dataset_name, dataloader, args):
         )
         
         index_dataset = utils.IndexWrapper(dataset.train_dataset)        
-        dataloader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
+        dataloader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, persistent_workers=args.persistant_workers)
     else:
         preprocess = dataloader.dataset.update_transforms(image_encoder.val_preprocess)
         
