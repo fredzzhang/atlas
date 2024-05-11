@@ -441,7 +441,7 @@ def train(task_vectors, args):
             if epoch == 0:
                 #Accuracy of the Zero-shot on the test set
                 acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, test=True and not args.imagenet_ood)
-            elif args.loss_fn not in ["simclr", "ssl_simclr_trusted", "entropy"]:
+            elif args.loss_fn not in ["simclr", "ssl_simclr_trusted", "entropy"] and epoch > max_ep - 5: #Eval during last 5 epochs only to save time
                 acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, test=False)
             
             string = 'Coefficients:\t|'
@@ -902,7 +902,7 @@ def train(task_vectors, args):
                 else:
                     optimizer = torch.optim.SGD(adapter.parameters(), lr_temp, momentum=0.9)
             elif args.tip_cot:
-                optimizer = torch.optim.AdamW([{'params': params}, {'params': adapter.weight}, {'params': adapter.beta_alpha}], lr=0.001, eps=1e-4)#Optimize tip + coefs
+                optimizer = torch.optim.AdamW([{'params': params}, {'params': adapter.weight}, {'params': adapter.beta_alpha}], lr=args.lr, eps=1e-4)#Optimize tip + coefs
             else:
                 optimizer = torch.optim.AdamW([{'params': adapter.weight}, {'params': adapter.beta_alpha}], lr=0.001, eps=1e-4)
                 #optimizer = torch.optim.AdamW([adapter.beta_alpha], lr=0.001, eps=1e-4)
@@ -946,7 +946,7 @@ def train(task_vectors, args):
                         if args.add_random_tv:
                             adjust_lr(optimizer, lrs[epoch], [.1,1.,100.])
                         else:
-                            adjust_lr(optimizer, lrs[epoch], [100.,1., 100.])
+                            adjust_lr(optimizer, lrs[epoch], [1.,.01, 1.])
                     else:
                         adjust_lr(optimizer, lrs[epoch], [1., 100.])
                 else:
@@ -1059,11 +1059,12 @@ def train(task_vectors, args):
                                     best_alpha = alpha_vec.cpu().clone()
                 else:
                     adapter.eval()
-                    
-                    if args.lp:
-                        acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, adapter=adapter, alpha_vec=alpha_vec)
-                    else:
-                        acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, adapter=adapter, beta_alpha=adapter.beta_alpha, labels_cache=labels_cache)                        
+
+                    if epoch > args.epochs - 5: #Eval during last 5 epochs only to save time
+                        if args.lp:
+                            acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, adapter=adapter, alpha_vec=alpha_vec)
+                        else:
+                            acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, adapter=adapter, beta_alpha=adapter.beta_alpha, labels_cache=labels_cache)                        
                         
                     if acc['top1'] > best_acc:
                         best_acc = acc['top1']
