@@ -250,7 +250,7 @@ def main(rank, args):
             pool_size = len(task_vectors)
             keys = task_vectors.keys()
             keys = [k for k in keys if k != dataset.replace('Val','')]
-            for p in range(pool_size):
+            for p in range(len(keys)):
                 base_acc, best_acc, best_epoch, best_coef, acc = train({keys[p]: task_vectors[keys[p]]}, args)
                 
                 with open(fname, 'a') as f: f.writelines([f"{dataset} - TV {keys[p]}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}. Accuracy on OOD datasets {[acc[k] for k in acc.keys() if 'top1' in k]}", f"{best_coef}\n"])
@@ -316,7 +316,7 @@ def train(task_vectors, args):
     model = ImageClassifier(image_encoder, classification_head)        
     model.freeze_head()
 
-    #Using the TIP augmentations to learn the coeficients but this does not make a huge difference.
+    #Using the TIP augmentations to learn the coeficients. The larger scale=(0.5, 1) of the RandomResizedCrop is important to get good results on some datasets.
     preprocess_fn = torchvision.transforms.Compose([
         torchvision.transforms.RandomResizedCrop(size=224, scale=(0.5, 1), interpolation=torchvision.transforms.InterpolationMode.BICUBIC),
         torchvision.transforms.RandomHorizontalFlip(p=0.5),
@@ -365,21 +365,20 @@ def train(task_vectors, args):
         'simclr_mixup': simclr_mixup_loss,
     }[args.loss_fn]
 
-    params = [p for p in model.parameters() if p.requires_grad]        
-    print(f"Got {sum([p.numel() for p in params])} trainable parameters")
-    
+    params = [p for p in model.parameters() if p.requires_grad]
+    print(f"Trainable params {sum([p.numel() for p in params])}")
     if args.tune_clip:
         optimizer = torch.optim.AdamW([{'params': [model.image_encoder.coef] + [model.image_encoder.coef1]}, {'params': model.image_encoder.params}], lr=args.lr, weight_decay=args.wd)
     else:
         optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
-        
+
     #optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
     #optimizer = torch.optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=1e-5)
 
     if args.lr_scheduler=="annealing":
         lrs = cosine_annealing_lr(args.lr, 0, args.epochs)
     else:
-        scheduler = cosine_lr(
+        scheduler = cosiqne_lr(
             optimizer,
             args.lr,
             args.warmup_length,
@@ -426,8 +425,7 @@ def train(task_vectors, args):
         model.image_encoder.model = model.image_encoder.model.tv_to_device()
     else:
         model.image_encoder = model.image_encoder.tv_to_device()
-
-        
+            
     for epoch in range(max_ep):
 
         # Evaluate before each epoch
