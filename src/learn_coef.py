@@ -10,6 +10,7 @@ import os
 import time
 import json
 import torch
+import torchvision
 
 from torch.cuda.amp import GradScaler
 from src.linearize import LinearizedImageEncoder
@@ -17,6 +18,7 @@ from src.modeling import ImageEncoder, ImageClassifier
 from src.task_vectors import LinearizedTaskVector, NonLinearTaskVector
 from src.composition import WeightedImageEncoder, WeightedLinearizedModel
 
+from src.utils import cosine_lr
 from src.args import parse_arguments
 from src.eval import eval_single_dataset
 from src.datasets.registry import get_dataset
@@ -97,12 +99,19 @@ def train(task_vectors, args):
     model.freeze_head()
     model = model.cuda()
 
-    preprocess_fn = image_encoder.train_preprocess
+    # Use more aggressive random crop with horizontal flip
+    preprocess_fn = torchvision.transforms.Compose([
+        torchvision.transforms.RandomResizedCrop(
+            size=224, scale=(0.5, 1),
+            interpolation=torchvision.transforms.InterpolationMode.BICUBIC
+        ), torchvision.transforms.RandomHorizontalFlip(p=0.5),
+    ] + model.train_preprocess.transforms[-3:])
     dataset = get_dataset(
         target_dataset,
         preprocess_fn,
         location=args.data_location,
         batch_size=args.batch_size,
+        num_workers=2,
     )
     data_loader = get_dataloader(dataset, is_train=True, args=args, image_encoder=None)
     num_batches = len(data_loader)
@@ -129,13 +138,19 @@ def train(task_vectors, args):
     params = [p for p in ddp_model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
 
+    # Do not use warm up
+    scheduler = cosine_lr(
+        optimizer, args.lr, 0,
+        args.epochs * num_batches // args.num_grad_accumulation,
+    )
+
     if linearized_finetuning:
         head_path = os.path.join(ckpdir, "learned_linear_composition.pt")
         log_path = os.path.join(args.save, "learned_linear_composition.json")
         coef = ddp_model.module.image_encoder.model.coef
     else:
-        head_path = os.path.join(ckpdir, "learned_linear_composition.pt")
-        log_path = os.path.join(args.save, "learned_linear_composition.json")
+        head_path = os.path.join(ckpdir, "learned_composition.pt")
+        log_path = os.path.join(args.save, "learned_composition.json")
         coef = ddp_model.module.image_encoder.coef
 
     scaler = GradScaler()
@@ -175,6 +190,7 @@ def train(task_vectors, args):
             scaler.scale(loss).backward()
 
             if (i + 1) % args.num_grad_accumulation == 0:
+                scheduler(step)
 
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
                 scaler.step(optimizer)
@@ -213,6 +229,8 @@ def train(task_vectors, args):
         else:
             image_encoder.coef = torch.nn.Parameter(best_coef)
         comp_acc[target_dataset] = eval_single_dataset(image_encoder, target_dataset, args)["top1"]
+        with open(log_path, 'w') as f:
+            json.dump(comp_acc, f, indent=4)
 
     cleanup_ddp()
 
@@ -221,34 +239,34 @@ if __name__ == "__main__":
 
     target_datasets = [
         "Cars",
-        # "DTD",
-        # "EuroSAT",
-        # "GTSRB",
-        # "MNIST",
-        # "RESISC45",
-        # "SUN397",
-        # "SVHN",
-        # "CIFAR10",
-        # "CIFAR100",
-        # "ImageNet",
-        # "STL10",
-        # "Food101",
-        # "Caltech101",
-        # "Caltech256",
-        # "FGVCAircraft",
-        # "Flowers102",
-        # "OxfordIIITPet",
-        # "CUB200",
-        # "PascalVOC",
-        # "Country211",
-        # "UCF101",
+        "DTD",
+        "EuroSAT",
+        "GTSRB",
+        "MNIST",
+        "RESISC45",
+        "SUN397",
+        "SVHN",
+        "CIFAR10",
+        "CIFAR100",
+        "ImageNet",
+        "STL10",
+        "Food101",
+        "Caltech101",
+        "Caltech256",
+        "FGVCAircraft",
+        "Flowers102",
+        "OxfordIIITPet",
+        "CUB200",
+        "PascalVOC",
+        "Country211",
+        "UCF101",
     ]
 
     args = parse_arguments()
     args.datasets = target_datasets
     # HACK: Some command line arguments are overwritten by defaults here.
     args.lr = 1e-1
-    args.epoch = 15
+    args.epochs = 10
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 64 if args.model == "ViT-L-14" else 128
     args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
