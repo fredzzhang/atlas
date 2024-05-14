@@ -322,6 +322,7 @@ def train(task_vectors, args):
         torchvision.transforms.RandomHorizontalFlip(p=0.5),
     ] + model.val_preprocess.transforms[-3:])
 
+    preprocess_fn = model.val_preprocess
     
     if 'simclr' in args.loss_fn or 'ssl' in args.loss_fn:
         size = 224
@@ -339,7 +340,10 @@ def train(task_vectors, args):
         dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
         
     #Wrapping to get index of the samples
-    if args.loss_fn in ["simclr", "ssl_simclr_trusted", "entropy", "entropy_sar"]:
+    if args.subsample is not None:
+        da = get_dataloader(dataset, is_train=True, args=args, image_encoder=None)
+        index_dataset = IndexWrapper(da.dataset)#Subset dataset created in get_dataloader
+    elif args.loss_fn in ["simclr", "ssl_simclr_trusted", "entropy", "entropy_sar"]:
         index_dataset = IndexWrapper(dataset.test_dataset) #Test time adapatation (no labels used)
     else:
         index_dataset = IndexWrapper(dataset.train_dataset)
@@ -367,6 +371,7 @@ def train(task_vectors, args):
 
     params = [p for p in model.parameters() if p.requires_grad]
     print(f"Trainable params {sum([p.numel() for p in params])}")
+    
     if args.tune_clip:
         optimizer = torch.optim.AdamW([{'params': [model.image_encoder.coef] + [model.image_encoder.coef1]}, {'params': model.image_encoder.params}], lr=args.lr, weight_decay=args.wd)
     else:
@@ -846,8 +851,14 @@ def train(task_vectors, args):
             
             image_encoder = model.module.image_encoder
             with torch.no_grad():
-                to_keep_u = torch.unique(to_keep)
-                to_keep_u.sort()
+                if args.loss_fn=="cross_entropy":
+                    to_keep_u = torch.arange(len(index_dataset))
+                    args.semi = len(to_keep_u) / classification_head.weight.shape[0]
+                    sampler = torch.utils.data.SubsetRandomSampler(to_keep_u)
+                else:
+                    to_keep_u = torch.unique(to_keep)
+                    to_keep_u.sort()
+                    
                 subset_t = SubsetSampler(to_keep_u)
                 data_loader_t = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=subset_t, num_workers=args.workers, persistent_workers=args.persistant_workers)
 
@@ -912,22 +923,21 @@ def train(task_vectors, args):
                 adapter.eval()   
                 acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, adapter=adapter, beta_alpha=adapter.beta_alpha, labels_cache=labels_cache)
 
-            
-            if acc['top1'] > best_acc:
-                best_acc = acc['top1']
-                best_coefs = string
-                best_epoch = epoch
-                if isinstance(coef, list):
-                    coefs = [c.data.detach().cpu() for c in coef]
-                else:
-                    coefs = coef.data.detach().cpu()
-                    
-                beta_alpha = adapter.beta_alpha
-                if args.attn:
-                    coefs1 = coef1.data.detach().cpu()
+                if acc['top1'] > best_acc:
+                    best_acc = acc['top1']
+                    best_coefs = string
+                    best_epoch = epoch
+                    if isinstance(coef, list):
+                        coefs = [c.data.detach().cpu() for c in coef]
+                    else:
+                        coefs = coef.data.detach().cpu()
+
+                    beta_alpha = adapter.beta_alpha
+                    if args.attn:
+                        coefs1 = coef1.data.detach().cpu()
 
             model.eval()
-            if not args.tip_cot and not args.ours:
+            if not args.tip_cot and not args.ours or args.loss_fn=="cross_entropy":
                 args.epochs = 1
             else:
                 args.epochs *= 2
@@ -1052,9 +1062,17 @@ def train(task_vectors, args):
                             if acc_val > best_acc:
                                 best_acc = acc_val
                                 best_epoch = epoch
-                                best_adapter = copy.deepcopy(adapter).cpu() #Not sure if .clone() is necessary here
+                                best_coefs = string
+                                best_adapter = copy.deepcopy(adapter).cpu()
                                 if args.lp:
                                     best_alpha = alpha_vec.cpu().clone()
+                                if isinstance(coef, list):
+                                    coefs = [c.data.detach().cpu() for c in coef]
+                                else:
+                                    coefs = coef.data.detach().cpu()
+                                if args.attn:
+                                    coefs1 = coef1.data.detach().cpu()
+
                 else:
                     adapter.eval()
 
@@ -1076,6 +1094,7 @@ def train(task_vectors, args):
                             beta_alpha = adapter.beta_alpha
                         if args.attn:
                             coefs1 = coef1.data.detach().cpu()
+                            
                         best_adapter = copy.deepcopy(adapter).cpu() #Not sure if .clone() is necessary here
                         if args.lp:
                             best_alpha = alpha_vec.cpu().clone()
@@ -1143,35 +1162,60 @@ if __name__ == "__main__":
 
     args = parse_arguments()
 
-    epochs = args.epochs #Go up to 30 for ResNets
-    
-    datasets = {
-        "Cars": epochs,
-        "DTD": epochs,
-        "EuroSAT": epochs,
-        "GTSRB": epochs,
-        "MNIST": epochs,
-        "RESISC45": epochs,
-        "SUN397": epochs,
-        "SVHN": epochs,
-        "CIFAR10": epochs,
-        "CIFAR100": epochs,        
-        "ImageNet": epochs,
-        "STL10": epochs,
-        "Food101": epochs,
-        "Caltech256": epochs,
-        "FGVCAircraft": epochs,
-        "Flowers102": epochs,
-        "OxfordIIITPet": epochs,
-        "CUB200": epochs,
-        "PascalVOC": epochs,
-        "Country211": epochs,
-        "Caltech101": epochs,
-        "UCF101": epochs
-    }
+    if args.loss_fn == "cross_entropy":
+        datasets = {
+            "Cars": 35,
+            "DTD": 76,
+            "EuroSAT": 13,
+            "GTSRB": 11,
+            "MNIST": 5,
+            "RESISC45": 15,
+            "SUN397": 14,
+            "SVHN": 4,
+            "CIFAR10": 5,
+            "CIFAR100": 6,
+            "ImageNet": 10,
+            "STL10": 4,
+            "Food101": 15,
+            "Caltech256": 8,
+            "FGVCAircraft": 60,
+            "Flowers102": 40,
+            "OxfordIIITPet": 5,
+            "CUB200": 20,
+            "PascalVOC": 10,
+            "Country211": 15,
+            "UCF101": 20,
+            "Caltech101":10,
+        }
+    else:
+        epochs = args.epochs #Go up to 30 for ResNets, row-wise, col-wise and random-wise
+        datasets = {
+            "Cars": epochs,
+            "DTD": epochs,
+            "EuroSAT": epochs,
+            "GTSRB": epochs,
+            "MNIST": epochs,
+            "RESISC45": epochs,
+            "SUN397": epochs,
+            "SVHN": epochs,
+            "CIFAR10": epochs,
+            "CIFAR100": epochs,        
+            "ImageNet": epochs,
+            "STL10": epochs,
+            "Food101": epochs,
+            "Caltech256": epochs,
+            "FGVCAircraft": epochs,
+            "Flowers102": epochs,
+            "OxfordIIITPet": epochs,
+            "CUB200": epochs,
+            "PascalVOC": epochs,
+            "Country211": epochs,
+            "Caltech101": epochs,
+            "UCF101": epochs
+        }
 
     if args.datasets is not None:
-        datasets = {k:epochs for k in args.datasets}
+        datasets = {k:datasets[k] for k in args.datasets}
 
     # HACK: Some command line arguments are overwritten by defaults here.
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
