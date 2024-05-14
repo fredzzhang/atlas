@@ -535,12 +535,12 @@ def train(task_vectors, args):
                 num_batches = len(data_loader)
                 data_loader = fabric.setup_dataloaders(data_loader, use_distributed_sampler=False)
                 
-                if args.tip_only:
-                    i = 0
-                    loss = torch.tensor(0)
-                    data_time = 0
-                    batch_time = 0
-                    continue
+        if args.tip_only:
+            i = 0
+            loss = torch.tensor(0)
+            data_time = 0
+            batch_time = 0
+            continue
 
         if args.select_tvs and epoch == 0:
             if args.features:
@@ -937,9 +937,9 @@ def train(task_vectors, args):
                         coefs1 = coef1.data.detach().cpu()
 
             model.eval()
-            if not args.tip_cot and not args.ours or args.loss_fn=="cross_entropy":
+            if not args.tip_cot and not args.ours:
                 args.epochs = 1
-            else:
+            elif args.tip_cot and not args.loss_fn=="cross_entropy":
                 args.epochs *= 2
 
             if args.lp:
