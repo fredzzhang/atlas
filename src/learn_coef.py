@@ -8,103 +8,39 @@ Australian Institute for Machine Learning
 
 import os
 import time
-
+import json
 import torch
-import torch.nn as nn
-from functorch import jvp, make_functional_with_buffers
+import torchvision
 
-from src.args import parse_arguments
-from src.datasets.common import get_dataloader, maybe_dictionarize
-from src.datasets.registry import get_dataset
-from src.distributed import cleanup_ddp, distribute_loader, is_main_process, setup_ddp
-from src.eval import eval_single_dataset
-from src.heads import get_classification_head
-from src.modeling import ImageEncoder, ImageClassifier
+from torch.cuda.amp import GradScaler
 from src.linearize import LinearizedImageEncoder
+from src.modeling import ImageEncoder, ImageClassifier
 from src.task_vectors import LinearizedTaskVector, NonLinearTaskVector
+from src.composition import WeightedImageEncoder, WeightedLinearizedModel
+
 from src.utils import cosine_lr
+from src.args import parse_arguments
+from src.eval import eval_single_dataset
+from src.datasets.registry import get_dataset
+from src.heads import get_classification_head
+from src.datasets.common import get_dataloader, maybe_dictionarize
+from src.distributed import cleanup_ddp, distribute_loader, is_main_process, setup_ddp
 
 @torch.jit.script
 def softmax_entropy(x: torch.Tensor) -> torch.Tensor:
     """Entropy of softmax distribution from logits."""
     return -(x.softmax(1) * x.log_softmax(1)).sum(1)
 
-class LinearizedModel_(nn.Module):
-    def __init__(self, model, task_vectors, device) -> None:
-        """A wrapper class to enable compositions of task vectors"""
-        super().__init__()
+def lp_reg(x, p=None, gamma=0.5) -> torch.Tensor:
+    return 0 if p is None else gamma * torch.norm(x, p=p, dim=0).mean()
 
-        self.params0 = model.params0
-        self.func0 = model.func0
-        self.buffers0 = model.buffers0
-        self._model_name = model._model_name
-
-        self.device = device
-
-        dparams = []
-        for tv in task_vectors:
-            dp = [tv.vector[k].to(device) for k in tv.vector if k.startswith('model.params.')]
-            dparams.append(dp)
-
-        self.dparams = dparams
-        self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors),))
-
-    def __call__(self, x) -> torch.Tensor:
-        """Computes the linearized model output using a first-order Taylor decomposition."""
-        dparams = [sum([p * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
-        out, dp = jvp(
-            lambda param: self.func0(param, x),
-            (tuple(self.params0),),
-            (tuple(dparams),),
-        )
-        return out + dp
-    
-class ImageEncoder_(nn.Module):
-    def __init__(self, model, task_vectors, device, layerwise=True) -> None:
-        """A wrapper class to enable compositions of task vectors"""
-        super().__init__()
-
-        func, params, self.buffer = make_functional_with_buffers(model)
-        # NOTE This is important to avoid the following error
-        # NotImplementedError: Cannot copy out of meta tensor; no data!
-        self.func = lambda p, x: func(p, self.buffer, x)
-        self.params = torch.nn.ParameterList(params)
-        for p in self.params:
-            p.requires_grad = False
-
-        self.device = device
-        # Copy the attributes from the image encoder.
-        self.train_preprocess = model.train_preprocess
-        self.val_preprocess = model.val_preprocess
-        self.cache_dir = model.cache_dir
-
-        dparams = []
-        for tv in task_vectors:
-            dp = [tv.vector[k].to(device) for k in tv.vector]
-            dparams.append(dp)
-
-        self.dparams = dparams
-
-        self.layerwise = layerwise
-        if layerwise:
-            self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params)))
-        else:
-            self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors),))
-
-    def __call__(self, x) -> torch.Tensor:
-        if self.layerwise:
-            dparams = [sum([p * c[i] for p, c in zip(dp, self.coef)]) for i, dp in enumerate(zip(*self.dparams))]
-        else:
-            dparams = [sum([p * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]
-        new_params = [dp + p for dp, p in zip(dparams, self.params)]
-        return self.func(new_params, x)
-    
 def main(rank, args):
 
     # Load the individual task vectors.
     pool = [
-        "Cars", "DTD", "EuroSAT", "GTSRB",
-        "MNIST", "RESISC45", "SUN397", "SVHN",
+        "Cars", "DTD", "EuroSAT", "GTSRB", "MNIST", "RESISC45", "SUN397", "SVHN",
+        "CIFAR10", "CIFAR100", "ImageNet", "STL10", "Food101", "Caltech101", "Caltech256",
+        "FGVCAircraft", "Flowers102", "OxfordIIITPet", "CUB200", "PascalVOC", "Country211", "UCF101",
     ]
     task_vectors = {}
     for dataset in pool:
@@ -119,10 +55,9 @@ def main(rank, args):
 
     args.rank = rank
     for dataset in args.datasets:
-        args.epochs = args.datasets[dataset]
-        args.test_dataset = dataset
+        args.target_dataset = dataset + "Val"
         print("=" * 100)
-        print(f"Finetuning task vector coefficients of {args.model} on {dataset}")
+        print(f"Learning task vector coefficients on {dataset} with {args.model} ")
         print("=" * 100)
 
         train(task_vectors, args)
@@ -130,8 +65,8 @@ def main(rank, args):
 def train(task_vectors, args):
 
     setup_ddp(args.rank, args.world_size, port=args.port)
-    test_dataset = args.test_dataset
-    ckpdir = os.path.join(args.save, test_dataset)
+    target_dataset = args.target_dataset
+    ckpdir = os.path.join(args.save, target_dataset)
     os.makedirs(ckpdir, exist_ok=True)
 
     assert args.finetuning_mode in [
@@ -143,34 +78,51 @@ def train(task_vectors, args):
     if linearized_finetuning:
         print("Using linearized fine-tuning.")
 
-    orig_dataset = test_dataset.split('Val')[0]
+    orig_dataset = target_dataset.replace("Val", "")
+    # Remove the task vector for the target task
     task_vectors = [v for k, v in task_vectors.items() if orig_dataset != k]
 
     if args.finetuning_mode == "linear":
         image_encoder = LinearizedImageEncoder(args, keep_lang=False)
-        image_encoder.model = LinearizedModel_(image_encoder.model, task_vectors, device=args.rank)
+        image_encoder.model = WeightedLinearizedModel(
+            image_encoder.model, task_vectors, blockwise=args.blockwise_coef
+        )
     else:
         image_encoder = ImageEncoder(args)
-        image_encoder = ImageEncoder_(image_encoder, task_vectors, device=args.rank)
+        image_encoder = WeightedImageEncoder(
+            image_encoder, task_vectors, blockwise=args.blockwise_coef
+        )
 
-    classification_head = get_classification_head(args, test_dataset)
+    classification_head = get_classification_head(args, target_dataset)
     model = ImageClassifier(image_encoder, classification_head)
 
     model.freeze_head()
     model = model.cuda()
 
-    preprocess_fn = model.val_preprocess
-
+    # Use more aggressive random crop with horizontal flip
+    preprocess_fn = torchvision.transforms.Compose([
+        torchvision.transforms.RandomResizedCrop(
+            size=224, scale=(0.5, 1),
+            interpolation=torchvision.transforms.InterpolationMode.BICUBIC
+        ), torchvision.transforms.RandomHorizontalFlip(p=0.5),
+    ] + model.train_preprocess.transforms[-3:])
     dataset = get_dataset(
-        test_dataset,
+        target_dataset,
         preprocess_fn,
         location=args.data_location,
         batch_size=args.batch_size,
+        num_workers=2,
     )
-    data_loader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
-    # Override shuffle to True
-    data_loader.shuffle = True
-    num_batches = len(dataset.test_loader)
+    data_loader = get_dataloader(dataset, is_train=True, args=args, image_encoder=None)
+    num_batches = len(data_loader)
+
+    # Printing loss between four and ten times an epoch
+    if args.print_every * 10 < num_batches:
+        print_every = int(num_batches / 10)
+    elif args.print_every * 4 > num_batches:
+        print_every = max(int(num_batches / 4), 1)
+    else:
+        print_every = args.print_every
 
     # Distribute the data and model across the GPUs.
     ddp_loader = distribute_loader(data_loader)
@@ -181,39 +133,39 @@ def train(task_vectors, args):
         output_device=args.rank,
     )
 
-    loss_fn = {
-        'entropy': softmax_entropy,
-        'cross_entropy': torch.nn.CrossEntropyLoss()
-    }[args.loss_fn]
+    loss_fn = torch.nn.CrossEntropyLoss()
 
     params = [p for p in ddp_model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
 
+    # Do not use warm up
     scheduler = cosine_lr(
-        optimizer,
-        args.lr,
-        args.warmup_length,
+        optimizer, args.lr, 0,
         args.epochs * num_batches // args.num_grad_accumulation,
     )
 
-    if args.finetuning_mode == "linear":
+    if linearized_finetuning:
+        head_path = os.path.join(ckpdir, "learned_linear_composition.pt")
+        log_path = os.path.join(args.save, "learned_linear_composition.json")
         coef = ddp_model.module.image_encoder.model.coef
     else:
+        head_path = os.path.join(ckpdir, "learned_composition.pt")
+        log_path = os.path.join(args.save, "learned_composition.json")
         coef = ddp_model.module.image_encoder.coef
 
-    ddp_model.eval()
+    scaler = GradScaler()
+    if is_main_process():
+        print(f"=> Zero-shot accuracy on {target_dataset}:\t{100*args.zs_acc[target_dataset]:.2f}%.")
+        if os.path.exists(log_path):
+            with open(log_path, 'r') as f:
+                comp_acc = json.load(f)
+        else:
+            comp_acc = {}
+
+    best_coef = None
+    best_acc = args.zs_acc[target_dataset]
     for epoch in range(args.epochs):
-        # Evaluate before each epoch
-        if is_main_process():
-            # We only need to evaluate the model on the first GPU.
-            image_encoder = ddp_model.module.image_encoder
-            eval_single_dataset(image_encoder, test_dataset, args)
-            string = 'Coefficients:\t|'
-            for c in coef.data:
-                string += f"`{c.mean().item():.4f}`|"
-            print(string)
-
-
+        ddp_loader.sampler.set_epoch(epoch)
         for i, batch in enumerate(ddp_loader):
             start_time = time.time()
 
@@ -226,80 +178,95 @@ def train(task_vectors, args):
             inputs = batch["images"].cuda()
             data_time = time.time() - start_time
 
-            logits = ddp_model(inputs)
-
-            if args.loss_fn == 'cross_entropy':
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
+                logits = ddp_model(inputs)
                 labels = batch["labels"].cuda()
                 loss = loss_fn(logits, labels)
-            else:
-                loss = loss_fn(logits).mean(0)
+                # Apply regularisation if needed.
+                reg = lp_reg(coef, args.lp_reg)
+                loss = loss + reg
+                loss = loss / args.num_grad_accumulation
 
-            loss.backward()
+            scaler.scale(loss).backward()
 
             if (i + 1) % args.num_grad_accumulation == 0:
                 scheduler(step)
 
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
                 optimizer.zero_grad()
 
             batch_time = time.time() - start_time
 
             if (
-                step % args.print_every == 0
+                step % print_every == 0
                 and ((i + 1) % args.num_grad_accumulation == 0)
                 and is_main_process()
             ):
                 percent_complete = 100 * (i + 1) / len(ddp_loader)
                 print(
-                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(dataset.test_loader)}]\t"  # noqa: E501
-                    f"Loss: {loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",  # noqa: E501
+                    f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{num_batches}]\t"           # noqa: E501
+                    f"Loss: {loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",   # noqa: E501
                     flush=True,
                 )
+        
+        # Evaluate after each epoch
+        if is_main_process():
+            image_encoder = ddp_model.module.image_encoder
+            acc = eval_single_dataset(image_encoder, target_dataset, args)["top1"]
+            if acc > best_acc:
+                best_acc = acc
+                best_coef = coef.data.clone()
+                torch.save(best_coef, head_path)
 
-    percent_complete = 100 * (i + 1) / len(ddp_loader)
-    print(
-        f"Train Epoch: {epoch} [{percent_complete:.0f}% {i + 1}/{len(dataset.test_loader)}]\t"  # noqa: E501
-        f"Loss: {loss.item():.6f}\tData (t) {data_time:.3f}\tBatch (t) {batch_time:.3f}",  # noqa: E501
-        flush=True,
-    )
     if is_main_process():
-        # We only need to evaluate the model on the first GPU.
+        comp_acc[target_dataset] = best_acc
+        target_dataset = target_dataset.replace("Val", "")
         image_encoder = ddp_model.module.image_encoder
-        eval_single_dataset(image_encoder, test_dataset, args)
-        string = 'Coefficients:\t|'
-        for c in coef.data:
-            string += f"`{c.mean().item():.4f}`|"
-        print(string)
         if linearized_finetuning:
-            head_path = os.path.join(ckpdir, "linear_layer_coef_.pt")
-            coef = ddp_model.module.image_encoder.model.coef
+            image_encoder.model.coef = torch.nn.Parameter(best_coef)
         else:
-            head_path = os.path.join(ckpdir, "layer_coef.pt")
-            coef = ddp_model.module.image_encoder.coef
-        torch.save(coef, head_path)
+            image_encoder.coef = torch.nn.Parameter(best_coef)
+        comp_acc[target_dataset] = eval_single_dataset(image_encoder, target_dataset, args)["top1"]
+        with open(log_path, 'w') as f:
+            json.dump(comp_acc, f, indent=4)
 
     cleanup_ddp()
 
 
 if __name__ == "__main__":
 
-    # Epochs w/ lr=1e-2 for entropy objective
-    datasets = {
-        "Cars": 1,
-        "DTD": 3,
-        "EuroSAT": 6,
-        "GTSRB": 3,
-        "MNIST": 10,
-        "RESISC45": 2,
-        "SUN397": 1,
-        "SVHN": 1,
-    }
+    target_datasets = [
+        "Cars",
+        "DTD",
+        "EuroSAT",
+        "GTSRB",
+        "MNIST",
+        "RESISC45",
+        "SUN397",
+        "SVHN",
+        "CIFAR10",
+        "CIFAR100",
+        "ImageNet",
+        "STL10",
+        "Food101",
+        "Caltech101",
+        "Caltech256",
+        "FGVCAircraft",
+        "Flowers102",
+        "OxfordIIITPet",
+        "CUB200",
+        "PascalVOC",
+        "Country211",
+        "UCF101",
+    ]
 
     args = parse_arguments()
-    args.datasets = datasets
+    args.datasets = target_datasets
     # HACK: Some command line arguments are overwritten by defaults here.
-    args.lr = 1e-2
+    args.lr = 1e-1
+    args.epochs = 10
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 64 if args.model == "ViT-L-14" else 128
     args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
@@ -309,4 +276,9 @@ if __name__ == "__main__":
         args.save = f"checkpoints_{args.seed}/{args.model}"
     else:
         args.save = f"checkpoints/{args.model}"
+    if args.subsample is not None:
+        args.save += f"_{args.subsample*100:.0f}perc"
+
+    with open(os.path.join(args.save, "zeroshot_accuracies.json"), 'r') as f:
+        args.zs_acc = json.load(f)
     torch.multiprocessing.spawn(main, args=(args,), nprocs=args.world_size)
