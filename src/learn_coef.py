@@ -832,7 +832,7 @@ def train(task_vectors, args):
                     string += f"`{c:.4f}`|"
         print(string)
         
-        if acc['top1'] > best_acc and epoch > 0:
+        if acc['top1'] > best_acc:
             best_acc = acc['top1']
             best_epoch = epoch
             best_coefs = string
@@ -841,8 +841,10 @@ def train(task_vectors, args):
             else:
                 coefs = coef.data.detach().cpu()
                 if args.attn:
-                    coefs1 = coef1.data.detach().cpu()                   
-        
+                    coefs1 = coef1.data.detach().cpu()
+                    
+        if epoch == 0:
+            best_acc = 0
         if args.tip_ft:
             fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="32")
             fabric.launch()
