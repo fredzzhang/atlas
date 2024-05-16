@@ -118,7 +118,7 @@ def collect_params(model):
     """
     params = []
     names = []
-    for nm, m in model.named_modules():
+    for nm, m in model.named_parameters():
         # skip top layers for adaptation: layer4 for ResNets and blocks9-11 for Vit-Base
         if 'layer4' in nm:
             continue
@@ -132,7 +132,6 @@ def collect_params(model):
             continue
         if nm in ['norm']:
             continue
-
         if isinstance(m, (nn.BatchNorm2d, nn.LayerNorm, nn.GroupNorm)):
             for np, p in m.named_parameters():
                 if np in ['weight', 'bias']:  # weight is scale, bias is shift

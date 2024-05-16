@@ -277,6 +277,7 @@ class ImageEncoder_(nn.Module):
         n = 0
         self.names = []
         self.buffer_index = [-1] #-1 for unimportant values such as attn mask and num_batches_tracked (equal to 0/-inf in task vectors)
+        self.norm_params = []
         for i, (p, (name, _)) in enumerate(zip(self.params, model.named_parameters())):
             if ".visual" not in name:
                 p.requires_grad = False
@@ -295,6 +296,12 @@ class ImageEncoder_(nn.Module):
                     self.buffer_index.append(i-1)
                     self.buffer_index.append(i)
                     self.buffer_index.append(-1)#num_batches_tracked
+
+            if 'ln_' in name:
+                if not ('resblocks.11' in name or 'resblocks.10' in name or 'resblocks.9' in name):
+                    self.norm_params.append(i)
+            
+        
                             
         self.bnames = []
         for i, (name, _) in enumerate(model.named_buffers()):
@@ -515,3 +522,47 @@ class ImageEncoder_(nn.Module):
         del self.base_func
         del self
 
+class MultiHeadImageClassifier(torch.nn.Module):
+    def __init__(self, image_encoder, classification_heads):
+        super().__init__()
+        self.image_encoder = image_encoder
+        self.classification_heads = torch.nn.ModuleList(classification_heads)
+        if self.image_encoder is not None:
+            self.train_preprocess = self.image_encoder.train_preprocess
+            self.val_preprocess = self.image_encoder.val_preprocess
+
+    def freeze_head(self):
+        for idx in range(len(self.classification_heads)):
+            self.classification_heads[idx].weight.requires_grad_(False)
+            self.classification_heads[idx].bias.requires_grad_(False)
+
+    def forward(self, inputs, num):
+        """Process inputs with different classification heads.
+
+        Parameters:
+        -----------
+        inputs: Tensor
+            Input images.
+        num: List[int]
+            Number of images for each head to process. The length must be
+            equal to the number of heads.
+        """
+        features = self.image_encoder(inputs)
+        split_features = features.split(num)
+        outputs = [
+            head(feat) for feat, head in
+            zip(split_features, self.classification_heads)
+        ]
+        return outputs
+
+    def __call__(self, inputs, num):
+        return self.forward(inputs, num)
+
+    def save(self, filename):
+        print(f"Saving image classifier to {filename}")
+        utils.torch_save(self, filename)
+
+    @classmethod
+    def load(cls, filename):
+        print(f"Loading image classifier from {filename}")
+        return utils.torch_load(filename)

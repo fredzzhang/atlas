@@ -405,12 +405,35 @@ def parse_arguments():
         help="Persistant dataloader workers for concurrent running"
     )
     parser.add_argument(
+        "--addition",
+        default=False,
+        action='store_true',
+        help="Task addition"
+    )
+    parser.add_argument(
+        "--full-addition",
+        default=False,
+        action='store_true',
+        help="Task addition on 22 datasets"
+    )
+    parser.add_argument(
+        "--negation",
+        default=False,
+        action='store_true',
+        help="Task negation"
+    )
+    parser.add_argument(
         "--random-wise",
         default=None,
         type=int,
         help="Number of parameter per layer (randomly assigned)."
     )
-    
+    parser.add_argument(
+        "--clip-ft",
+        default=False,
+        action='store_true',
+        help="FT clip (test time adapt)"
+    )
     parsed_args = parser.parse_args()
     parsed_args.device = "cuda" if torch.cuda.is_available() else "cpu"
 

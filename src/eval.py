@@ -66,7 +66,29 @@ def get_val_features(image_encoder, dataset_name, dataset, args):
 
     return torch.cat(feats, dim=0), torch.cat(logits_, dim=0), torch.cat(labels, dim=0)
 
-def eval_single_dataset(image_encoder, dataset_name, dataset, args, adapter=None, alpha_vec=None, beta_alpha=None, labels_cache=None, test=False):
+def eval_neg_dataset(image_encoder, pool, args, test=False):
+    #pool[-1] is the neg dataset
+    per_dataset_accs = {}
+    for p in pool:
+        a = eval_single_dataset(image_encoder, p.split('Val')[0]+'Val', args, test=test)
+        per_dataset_accs[p] = a['top1']
+        
+    a['top1'] = 1-a['top1']
+    a['detail_acc'] = per_dataset_accs
+    a['top1_pos'] = np.mean(np.array([v for _, v in per_dataset_accs.items()])[:-1])
+    return a
+
+def eval_add_dataset(image_encoder, pool, args, test=False):
+    per_dataset_accs = {}
+    for p in pool:
+        a = eval_single_dataset(image_encoder, p.split('Val')[0]+'Val', args, test=test)
+        per_dataset_accs[p] = a['top1']
+        
+    a['top1'] = np.mean(np.array([v for _, v in per_dataset_accs.items()]))
+    a['detail_acc'] = per_dataset_accs
+    return a
+    
+def eval_single_dataset(image_encoder, dataset_name, args, adapter=None, alpha_vec=None, beta_alpha=None, labels_cache=None, test=False):
     # Build the classification head with all classes, when the dataset only has one.
     if '_' in dataset_name:
         dataset_name_ = dataset_name.split('_')[-1]

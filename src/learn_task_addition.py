@@ -18,9 +18,9 @@ from src.args import parse_arguments
 from src.datasets.common import get_dataloader, maybe_dictionarize
 from src.datasets.registry import get_dataset
 from src.distributed import cleanup_ddp, distribute_loader, is_main_process, setup_ddp
-from src.eval import eval_single_dataset, eval_single_train_dataset, get_val_features
+from src.eval import eval_single_dataset, eval_single_train_dataset, get_val_features, eval_add_dataset, eval_neg_dataset
 from src.heads import get_classification_head
-from src.modeling import ImageEncoder, ImageClassifier, ImageEncoder_, LinearizedModel_
+from src.modeling import ImageEncoder, ImageClassifier, ImageEncoder_, LinearizedModel_, MultiHeadImageClassifier
 from src.linearize import LinearizedImageEncoder
 from src.task_vectors import LinearizedTaskVector, NonLinearTaskVector
 from src.utils import cosine_lr, cosine_annealing_lr, adjust_lr, TwoTransform, TwoAsymetricTransform, adjust_lr_lp, extract_datasets, IndexWrapper, update_transforms, get_n_shots
@@ -124,13 +124,35 @@ def simclr_mixup_loss(logits1: torch.Tensor, logits2: torch.Tensor, lam:float, i
 def main(rank, args):
 
     # Load the individual task vectors.
-    pool = [
-        "Cars", "DTD", "EuroSAT", "GTSRB",
-        "MNIST", "RESISC45", "SUN397", "SVHN", "CIFAR10",
-        "CIFAR100", "ImageNet", "STL10", "Food101", "Caltech256",
-        "FGVCAircraft", "Flowers102", "OxfordIIITPet", "CUB200",
-        "PascalVOC", "Country211", "Caltech101", "UCF101"
-    ]
+    if args.addition:
+        if args.full_addition:
+            pool = [
+                "Cars", "DTD", "EuroSAT", "GTSRB",
+                "MNIST", "RESISC45", "SUN397", "SVHN", "CIFAR10",
+                "CIFAR100", "ImageNet", "STL10", "Food101", "Caltech256",
+                "FGVCAircraft", "Flowers102", "OxfordIIITPet", "CUB200",
+                "PascalVOC", "Country211", "Caltech101", "UCF101"
+            ]
+        else:
+            pool = [
+                "Cars", "DTD", "EuroSAT", "GTSRB",
+                "MNIST", "RESISC45", "SUN397", "SVHN"
+            ]
+            
+    elif args.negation:
+        pool = [
+            "Cars", "DTD", "EuroSAT", "GTSRB",
+            "MNIST", "RESISC45", "SUN397", "SVHN", "ImageNet"
+        ]        
+    else:
+        pool = [
+            "Cars", "DTD", "EuroSAT", "GTSRB",
+            "MNIST", "RESISC45", "SUN397", "SVHN", "CIFAR10",
+            "CIFAR100", "ImageNet", "STL10", "Food101", "Caltech256",
+            "FGVCAircraft", "Flowers102", "OxfordIIITPet", "CUB200",
+            "PascalVOC", "Country211", "Caltech101", "UCF101"
+        ]
+        
     
     VIT_B_32_hugg= ['laion400m_e31', 'laion400m_e32', 'laion2b_e16', 'laion2b_s34b_b79k', 'datacomp_xl_s13b_b90k', 'datacomp_m_s128m_b4k', 'commonpool_m_clip_s128m_b4k', 'commonpool_m_laion_s128m_b4k', 'commonpool_m_image_s128m_b4k', 'commonpool_m_text_s128m_b4k', 'commonpool_m_basic_s128m_b4k', 'commonpool_m_s128m_b4k', 'datacomp_s_s13m_b4k', 'commonpool_s_clip_s13m_b4k', 'commonpool_s_laion_s13m_b4k', 'commonpool_s_image_s13m_b4k', 'commonpool_s_text_s13m_b4k', 'commonpool_s_basic_s13m_b4k',  'commonpool_s_s13m_b4k'] #'openai' (zero-shot base)
     
@@ -268,9 +290,15 @@ def main(rank, args):
                 else:
                     coef_dict[dataset]["beta_alpha"] = acc["beta_alpha"]
 
+                    
             if not args.no_log:
                 torch.save(coef_dict, fname.replace('.txt', '.pth'))
-                with open(fname, 'a') as f: f.writelines([f"{dataset}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}. Accuracy on OOD datasets {[acc[k] for k in acc.keys() if 'top1' in k]}", f"{best_coef}\n"])
+                if args.addition or args.negation:
+                    if args.negation:
+                        best_acc = 1-best_acc
+                    with open(fname, 'a') as f: f.writelines([f"{dataset}\n", f"Best accuracy {best_acc} at epoch {best_epoch}\n, Detailed accuracies {[a for _, a in acc['detail_acc'].items()]}", f"{best_coef}\n"])
+                else:
+                    with open(fname, 'a') as f: f.writelines([f"{dataset}\n", f"Base accuracy {base_acc}, best accuracy {best_acc} at epoch {best_epoch}\n, tip beta {acc['beta_alpha'][0]:.3f} alpha {acc['beta_alpha'][1]:.3f}. Accuracy on OOD datasets {[acc[k] for k in acc.keys() if 'top1' in k]}", f"{best_coef}\n"])
             
     if not args.no_log and len(args.datasets) > 0:
         with open(fname, 'a') as f: f.writelines([f"\nArguments {args}"])
@@ -293,9 +321,16 @@ def train(task_vectors, args):
     orig_dataset = test_dataset.split('Val')[0]
     if orig_dataset == "Webvision":
         orig_dataset = "ImageNet"
-        
-    pool = [k for k, v in task_vectors.items() if orig_dataset != k]
-    task_vectors = [v for k, v in task_vectors.items() if orig_dataset != k]
+
+    if args.addition:
+        pool = [k for k, v in task_vectors.items()]
+        task_vectors = [v for k, v in task_vectors.items()]
+    elif args.negation:
+        pool = [test_dataset.split('Val')[0], "ImageNet"]
+        task_vectors = [task_vectors[test_dataset.split('Val')[0]]]
+    else:
+        pool = [k for k, v in task_vectors.items() if orig_dataset != k]
+        task_vectors = [v for k, v in task_vectors.items() if orig_dataset != k]
 
     if "entropy_sar" in args.loss_fn:
         fabric = Fabric(accelerator="cuda", devices=1, strategy="dp", precision="32")
@@ -303,8 +338,7 @@ def train(task_vectors, args):
         fabric = Fabric(accelerator="cuda", devices=1, strategy="ddp", precision="16-mixed")
         
     fabric.launch()
-    args.fabric = fabric
-    
+    args.fabric = fabric    
    
     if args.finetuning_mode == "linear":
         image_encoder = LinearizedImageEncoder(args, keep_lang=False)
@@ -314,7 +348,11 @@ def train(task_vectors, args):
         image_encoder = ImageEncoder_(image_encoder, task_vectors, args)
 
     classification_head = get_classification_head(args, test_dataset)
-    model = ImageClassifier(image_encoder, classification_head)        
+    if args.addition or args.negation:
+        classification_heads = [classification_head] + [get_classification_head(args, dataset) for dataset in [p for p in pool if p != test_dataset.split('Val')[0]]]
+        model = MultiHeadImageClassifier(image_encoder, classification_heads)
+    else:
+        model = ImageClassifier(image_encoder, classification_head)        
     model.freeze_head()
 
     #Using the TIP augmentations to learn the coeficients. The larger scale=(0.5, 1) of the RandomResizedCrop is important to get good results on some datasets.
@@ -344,12 +382,19 @@ def train(task_vectors, args):
     if args.subsample is not None:
         da = get_dataloader(dataset, is_train=True, args=args, image_encoder=None)
         index_dataset = IndexWrapper(da.dataset)#Subset dataset created in get_dataloader
-    elif args.loss_fn in ["simclr", "ssl_simclr_trusted", "entropy", "entropy_sar"]:
+    elif args.loss_fn in ["simclr", "ssl_simclr_trusted", "entropy", "entropy_sar"] or args.addition or args.negation:
         index_dataset = IndexWrapper(dataset.test_dataset) #Test time adapatation (no labels used)
     else:
-        index_dataset = IndexWrapper(dataset.train_dataset)
+        index_dataset = IndexWrapper(dataset.train_dataset)        
+
+    if args.addition or args.negation:
+        data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size//len(pool), shuffle=True, num_workers=args.workers, persistent_workers=args.persistant_workers, drop_last=True)
         
-    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, persistent_workers=args.persistant_workers)
+        all_loaders = [get_dataloader(get_dataset(t, preprocess_fn, location=args.data_location, batch_size=args.batch_size//len(pool)), is_train=False, args=args, image_encoder=None) for t in [p for p in pool if p != test_dataset.split('Val')[0]]]
+        all_loaders = [fabric.setup_dataloaders(loader) for loader in all_loaders]
+        print([len(l) for l in all_loaders])
+    else:
+        data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, persistent_workers=args.persistant_workers)
 
     # Override shuffle to True
     data_loader.shuffle = True
@@ -370,13 +415,7 @@ def train(task_vectors, args):
         'simclr_mixup': simclr_mixup_loss,
     }[args.loss_fn]
 
-    if args.clip_ft:
-        params = [model.image_encoder.params[i] for i in model.image_encoder.norm_params]
-        for p in params:
-            p.requires_grad = True
-    else:
-        params = [p for p in model.parameters() if p.requires_grad]
-
+    params = [p for p in model.parameters() if p.requires_grad]
     print(f"Trainable params {sum([p.numel() for p in params])}")
     
     if args.tune_clip:
@@ -414,6 +453,10 @@ def train(task_vectors, args):
     #Calling fabric.setup() causes a repetitive memory increase with each new call for new datasets. Once the GPU reaches max memory, a flush happens somewhere to free up everything. Then the cycle starts again. gc.collect();torch.cuda.empty_cache() prevents the increase in case you wish to run multiple processes on the same GPU.
     gc.collect();torch.cuda.empty_cache()
     if "entropy_sar" in args.loss_fn:
+        if args.clip_ft:
+            params = model.image_encoder.params#[i] for i in model.image_encoder.norm_params]
+            for p in params:
+                p.requires_grad = True
         optimizer = SAM(params, torch.optim.SGD, lr=args.lr, momentum=0.9)
         model = SAR(model, optimizer, fabric)
         
@@ -450,9 +493,23 @@ def train(task_vectors, args):
             
             if epoch == 0:
                 #Accuracy of the Zero-shot on the test set
-                acc = eval_single_dataset(image_encoder, test_dataset,  args, test=True and not args.imagenet_ood)
+                acc = eval_single_dataset(image_encoder, test_dataset, args, test=True and not args.imagenet_ood)
             elif args.loss_fn not in ["simclr", "ssl_simclr_trusted", "entropy"] and epoch > max_ep - 5: #Eval during last 5 epochs only to save time
-                acc = eval_single_dataset(image_encoder, test_dataset,  args, test=False)
+                if args.addition:
+                    acc = eval_add_dataset(image_encoder, pool, args, test=False)
+                    print(f"Addition avg test acc {acc['top1']*100:.2f}")
+                elif args.negation:
+                    acc = eval_neg_dataset(image_encoder, pool, args, test=False)
+                    print(f"Neg avg acc {acc['top1_pos']*100:.2f}, neg {100-acc['top1']*100:.2f}")
+                else:
+                    acc = eval_single_dataset(image_encoder, test_dataset, args, test=False)
+
+            if args.addition or args.negation:
+                
+                for loader in all_loaders:
+                    loader.sampler.set_epoch(epoch)
+                    
+                all_loaders_iter = [iter(loader) for loader in all_loaders]
             
             string = 'Coefficients:\t|'
             if isinstance(coef, list):
@@ -738,6 +795,13 @@ def train(task_vectors, args):
                     )
 
                 continue
+            elif args.negation or args.addition:
+                add_batchs = [maybe_dictionarize(next(d_iter), index=False) for d_iter in all_loaders_iter]
+                batch_images = torch.cat([b['images'] for b in add_batchs], dim=0)
+                batch_labels = [b['labels'] for b in add_batchs]
+                images = torch.cat((inputs, batch_images), dim=0)
+                labels = [batch['labels']] + batch_labels
+                logits = model(images, len(inputs))
             
             elif 'ssl' in args.loss_fn and 'entro' not in args.loss_fn:
                 with torch.no_grad():
@@ -747,7 +811,16 @@ def train(task_vectors, args):
             else:
                 logits = model(inputs)
 
-            if args.loss_fn == 'cross_entropy':
+            if args.addition:                
+
+                loss = sum([F.cross_entropy(lo, l) for lo, l in zip(logits, labels)])
+                
+            elif args.negation:
+                losses = [-F.cross_entropy(lo, l) for lo, l in zip(logits, labels)]
+                losses[-1] = - losses[-1]
+                loss = sum(losses)
+
+            elif args.loss_fn == 'cross_entropy':
                 labels = batch["labels"]
                 loss = loss_fn(logits, labels)
             elif 'entro_conf' in args.loss_fn:
@@ -781,7 +854,7 @@ def train(task_vectors, args):
                 elif 'mixup' in args.loss_fn:
                     loss = loss_fn(logits, logits2, lam, index).mean()
                 else:
-                    loss = loss_fn(logits, logits2).mean()                    
+                    loss = loss_fn(feats, feats2).mean()                    
             else:
                 loss = loss_fn(logits).mean(0)
 
@@ -823,9 +896,9 @@ def train(task_vectors, args):
         # We only need to evaluate the model on the first GPU.
         image_encoder = model.module.image_encoder
         #with torch.autocast(device_type="cuda"):
-        if args.loss_fn not in ["simclr", "ssl_simclr_trusted", "entropy"]:
-            #No early stopping for test-time adaptation
-            acc = eval_single_dataset(image_encoder, test_dataset,  args)
+        if args.loss_fn not in ["simclr", "ssl_simclr_trusted", "entropy"] and not args.addition and not args.negation:
+            #No early stopping for test-time adaptation            
+            acc = eval_single_dataset(image_encoder, test_dataset, args)
             
         string = 'Coefficients:\t|'
         if isinstance(coef, list):
@@ -930,7 +1003,7 @@ def train(task_vectors, args):
 
             if not args.lp:
                 adapter.eval()   
-                acc = eval_single_dataset(image_encoder, test_dataset,  args, adapter=adapter, beta_alpha=adapter.beta_alpha, labels_cache=labels_cache)
+                acc = eval_single_dataset(image_encoder, test_dataset, dataset, args, adapter=adapter, beta_alpha=adapter.beta_alpha, labels_cache=labels_cache)
 
                 if acc['top1'] > best_acc:
                     best_acc = acc['top1']
@@ -1087,9 +1160,9 @@ def train(task_vectors, args):
 
                     if epoch > args.epochs - 5: #Eval during last 5 epochs only to save time
                         if args.lp:
-                            acc = eval_single_dataset(image_encoder, test_dataset,  args, adapter=adapter, alpha_vec=alpha_vec)
+                            acc = eval_single_dataset(image_encoder, test_dataset, args, adapter=adapter, alpha_vec=alpha_vec)
                         else:
-                            acc = eval_single_dataset(image_encoder, test_dataset,  args, adapter=adapter, beta_alpha=adapter.beta_alpha, labels_cache=labels_cache)                        
+                            acc = eval_single_dataset(image_encoder, test_dataset, args, adapter=adapter, beta_alpha=adapter.beta_alpha, labels_cache=labels_cache)                        
                         
                     if acc['top1'] > best_acc:
                         best_acc = acc['top1']
@@ -1134,7 +1207,14 @@ def train(task_vectors, args):
             acc["beta_alpha"] = adapter.beta_alpha
         acc["adapter"] = best_adapter.state_dict()
     else:
-        acc = eval_single_dataset(image_encoder, test_dataset.split('Val')[0], args, test=True)
+        if args.addition:
+            acc = eval_add_dataset(image_encoder, pool, args, test=True)
+            print(f"Addition avg test acc {acc['top1']*100:.2f}")
+        elif args.negation:
+            acc = eval_neg_dataset(image_encoder, pool, args, test=True)
+            print(f"Neg avg test acc {acc['top1_pos']*100:.2f}, neg {100-acc['top1']*100:.2f}")
+        else:
+            acc = eval_single_dataset(image_encoder, test_dataset.split('Val')[0], args, test=True)
     
     acc["coefs"] = coefs
     if args.attn:
@@ -1226,8 +1306,22 @@ if __name__ == "__main__":
     if args.datasets is not None:
         datasets = {k:datasets[k] for k in args.datasets}
 
-    if args.subsample is not None:
-        datasets["ImageNet"] = 1
+    if args.addition:
+        datasets = {'DTD':args.epochs}
+        
+    if args.negation:
+        epochs = args.epochs
+        datasets = {
+            "Cars": epochs,
+            "DTD": epochs,
+            "EuroSAT": epochs,
+            "GTSRB": epochs,
+            "MNIST": epochs,
+            "RESISC45": epochs,
+            "SUN397": epochs,
+            "SVHN": epochs,
+        }
+
     # HACK: Some command line arguments are overwritten by defaults here.
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 32 if args.model == "ViT-L-14" else 128
