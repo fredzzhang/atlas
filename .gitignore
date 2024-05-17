@@ -1,3 +1,7 @@
+
+
+src/CrossFit/data_more_shots
+src/CrossFit/models
 # Cached experiment results and logs
 checkpoints*
 *log*
