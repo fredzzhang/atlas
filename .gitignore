@@ -1,13 +1,13 @@
 
 
-src/CrossFit/data_more_shots
-src/CrossFit/data/
-src/CrossFit/daily/
-src/CrossFit/models/
-src/CrossFit/tasks/full_datasets
-src/CrossFit/playground/
-src/CrossFit/data_json/
-src/CrossFit/tasks_more_shots/
+CrossFit/data_more_shots
+CrossFit/data/
+CrossFit/daily/
+CrossFit/models/
+CrossFit/tasks/full_datasets
+CrossFit/playground/
+CrossFit/data_json/
+CrossFit/tasks_more_shots/
 
 # Cached experiment results and logs
 checkpoints*

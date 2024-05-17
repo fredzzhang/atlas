@@ -33,45 +33,42 @@ def parse_arguments():
         "--eval-on-full",
         default=False,
         action="store_true",
-        help="Evaluate on the full dataset, when the model is trained on one class."
+        help="Evaluate on the full dataset, when the model is trained on one class.",
     )
     parser.add_argument(
         "--loss-fn",
-        default='entropy',
+        default="entropy",
         type=str,
         help="Loss function to use.",
-        choices=["entropy", "cross_entropy"]
+        choices=["entropy", "cross_entropy"],
     )
     parser.add_argument(
         "--lp-reg",
         default=None,
         type=int,
         choices=[1, 2],
-        help="Regularisation applied to the learned coefficients."
+        help="Regularisation applied to the learned coefficients.",
     )
     parser.add_argument(
         "--blockwise-coef",
         default=False,
         action="store_true",
-        help="Use different coefficients on different parameter blocks."
+        help="Use different coefficients on different parameter blocks.",
     )
     parser.add_argument(
-        "--subsample",
-        default=None,
-        type=float,
-        help="Percentage of data to subsample."
+        "--subsample", default=None, type=float, help="Percentage of data to subsample."
     )
     parser.add_argument(
         "--partition",
         default="trainval",
         choices=["trainval", "traintest"],
-        help="Partitions of the dataset to use."
+        help="Partitions of the dataset to use.",
     )
     parser.add_argument(
         "--control-threshold",
         default=0.95,
         type=float,
-        help="Percentage of accuracy on the control dataset to maintain."
+        help="Percentage of accuracy on the control dataset to maintain.",
     )
     parser.add_argument(
         "--train-dataset",
@@ -179,6 +176,18 @@ def parse_arguments():
         type=int,
         default=21,
         help="Number of evaluation points used to find optimal coefficient in task arithmetic.",
+    )
+    parser.add_argument(
+        "--num_shots",
+        type=int,
+        default=1,
+        help="Number of shots to train the taskvectors.",
+    )
+    parser.add_argument(
+        "--is_lora",
+        type=bool,
+        default=False,
+        help="Using lora or not",
     )
     parsed_args = parser.parse_args()
     parsed_args.device = "cuda" if torch.cuda.is_available() else "cpu"
