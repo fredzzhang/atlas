@@ -95,44 +95,42 @@ def run(args, logger, prefix):
             # the dimension of the low-rank matrices
             r=16,
             # the scaling factor for the low-rank matrices
-            lora_alpha=32,
+            lora_alpha=64,
             # the dropout probability of the LoRA layers
             lora_dropout=0.01,
             target_modules=[
                 "k",
                 "q",
                 "v",
-                # "o",
+                "o",
             ],
         )
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
 
+        # optimizer = AdamW(model.parameters(), lr=args.learning_rate, eps=1e-4)
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": args.weight_decay,
+            },
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
         optimizer = AdamW(
-            model.parameters(), lr=args.learning_rate, eps=args.adam_epsilon
+            optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon
         )
-        # no_decay = ["bias", "LayerNorm.weight"]
-        # optimizer_grouped_parameters = [
-        #     {
-        #         "params": [
-        #             p
-        #             for n, p in model.named_parameters()
-        #             if not any(nd in n for nd in no_decay)
-        #         ],
-        #         "weight_decay": args.weight_decay,
-        #     },
-        #     {
-        #         "params": [
-        #             p
-        #             for n, p in model.named_parameters()
-        #             if any(nd in n for nd in no_decay)
-        #         ],
-        #         "weight_decay": 0.0,
-        #     },
-        # ]
-        # optimizer = AdamW(
-        #     optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon
-        # )
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=args.warmup_steps,
@@ -153,12 +151,12 @@ def run(args, logger, prefix):
                 # the scaling factor for the low-rank matrices
                 lora_alpha=32,
                 # the dropout probability of the LoRA layers
-                lora_dropout=0.01,
+                lora_dropout=0.0,
                 target_modules=[
                     "k",
                     "q",
                     "v",
-                    # "o",
+                    "o",
                 ],
             )
             model = MyModelClass.from_pretrained(args.model)
@@ -169,6 +167,7 @@ def run(args, logger, prefix):
                     f"{prefix}_{args.learning_rate}_{args.train_batch_size}_best-model.pt",
                 ),
             )
+            print("$$$$$$$$$$$$$$$4 HERE CHECKPOINT")
             logger.info("Loading checkpoint from CPU")
         else:
             checkpoint = os.path.join(args.output_dir, args.predict_checkpoint)

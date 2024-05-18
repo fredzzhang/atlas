@@ -246,7 +246,6 @@ def main():
                     test_performance,
                 ]
                 df.to_csv(os.path.join(args.output_dir, "result.csv"))
-
                 if dev_performance > best_dev_performance:
                     best_dev_performance = dev_performance
                     best_config = [prefix, lr, bsz, dev_performance, test_performance]

@@ -12,10 +12,11 @@ echo "Task: $TASK, Checkpoint: $CHECKPOINT, Identifier: $IDENTIFIER"
 CUDA_VISIBLE_DEVICES=$GPU \
 python tune_hps_singletask_taskvectors.py \
 --task_dir data_more_shots/${SHOTS}_shot/${TASK}/ \
---checkpoints models/commonsense_qa-lora/1_shot/singletask-commonsense_qa/commonsense_qa_1_13_0.002_8_best-model.pt models/quail-lora/1_shot/singletask-quail/quail_1_13_0.002_4_best-model.pt models/sciq-lora/1_shot/singletask-sciq/sciq_1_13_0.002_4_best-model.pt \
+--checkpoints models/commonsense_qa-lora/1_shot/singletask-commonsense_qa/commonsense_qa_1_13_0.002_8_best-model.pt models/quail-lora/5_shot/singletask-quail/quail_5_13_0.002_best-model.pt models/sciq-lora/5_shot/singletask-sciq/sciq_5_2_0.002_best-model.pt \
+--do_train \
 --do_predict \
 --learning_rate_list 2e-3 \
---bsz_list 2 4 8 \
+--bsz_list 2 \
 --eval_period 20 \
 --warmup_steps 50 \
 --max_grad_norm 0.1 \

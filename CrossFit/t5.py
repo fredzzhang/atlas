@@ -5,7 +5,7 @@ from transformers import T5ForConditionalGeneration
 
 # from transformers.models.t5.modeling_t5 import shift_tokens_right
 
-from CrossFit.utils import label_smoothed_nll_loss
+from utils import label_smoothed_nll_loss
 
 
 class MyT5(T5ForConditionalGeneration):
