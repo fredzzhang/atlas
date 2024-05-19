@@ -35,7 +35,6 @@ def make_functional(mod, disable_autograd_tracking=False):
 def make_functional_with_buffers(mod, disable_autograd_tracking=False):
     params_dict = dict(mod.named_parameters())
     params_names = params_dict.keys()
-    print(params_names)
     params_values = tuple(params_dict.values())
 
     buffers_dict = dict(mod.named_buffers())
@@ -46,8 +45,6 @@ def make_functional_with_buffers(mod, disable_autograd_tracking=False):
     stateless_mod.to("meta")
 
     def fmodel(new_params_values, new_buffers_values, *args, **kwargs):
-        print(kwargs)
-        print(args)
         new_params_dict = {
             name: value for name, value in zip(params_names, new_params_values)
         }
@@ -80,14 +77,21 @@ class WeightedT5(nn.Module):
 
         func, params, self.buffer = make_functional_with_buffers(model)
 
-        print(len(params), len(self.buffer))
         # NOTE This is important to avoid the following error
         # NotImplementedError: Cannot copy out of meta tensor; no data!
         self.func = lambda p, b, y, **x: func(p, b, y, **x)
         self.params = torch.nn.ParameterList(params)
         for p in self.params:
             p.requires_grad = False
-        self.dparams = [[tv.vector[k] for k in tv.vector] for tv in task_vectors]
+        self.dparams = []
+        self.dnames = []
+        for idx, tv in enumerate(task_vectors):
+            aux = []
+            for k in tv.vector:
+                if idx == 0:
+                    self.dnames.append(k)
+                aux.append(tv.vector[k])
+            self.dparams.append(aux)
         self.blockwise = blockwise
         if blockwise:
             self.coef = torch.nn.Parameter(
@@ -99,6 +103,32 @@ class WeightedT5(nn.Module):
                     len(task_vectors),
                 )
             )
+        print(self.coef.shape)
+
+    def transfer_weights(self, inference):
+        """_summary_
+
+        Args:
+            inference (_type_): _description_
+        """
+        if self.blockwise:
+            dparams = []
+            for i, dp in enumerate(zip(*self.dparams)):
+                aux = []
+                for p, c in zip(dp, self.coef):
+                    aux.append(p * c[i])
+                dparams.append(sum(aux))
+        else:
+            dparams = []
+            for dp in zip(*self.dparams):
+                aux = []
+                for p, c in zip(dp, self.coef):
+                    aux.append(p * c)
+                dparams.append(sum(aux))
+        new_params = [dp + p for dp, p in zip(dparams, self.params)]
+        for idx, name in enumerate(self.dnames):
+            inference.state_dict()[name] = new_params[idx].cpu()
+        return inference
 
     def _apply(self, fn):
         """Override method to relocate buffer list
@@ -139,21 +169,13 @@ class WeightedT5(nn.Module):
                 for p, c in zip(dp, self.coef):
                     aux.append(p * c[i])
                 dparams.append(sum(aux))
-            # dparams = [
-            #     sum([p * c[i] for p, c in zip(dp, self.coef)])
-            #     for i, dp in enumerate(zip(*self.dparams))
-            # ]
         else:
             dparams = []
             for dp in zip(*self.dparams):
                 aux = []
                 for p, c in zip(dp, self.coef):
-                    print(len(dp), c, p.shape)
                     aux.append(p * c)
                 dparams.append(sum(aux))
-            # dparams = [
-            #     sum([p * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)
-            # ]
         new_params = [dp + p for dp, p in zip(dparams, self.params)]
         # aux = [
         #     input_ids,

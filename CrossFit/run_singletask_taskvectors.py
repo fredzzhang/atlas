@@ -56,6 +56,24 @@ def run(args, logger, prefix):
     MyModelClass, MyTokenizerClass = get_model_and_tokenizer(args.model)
     tokenizer = MyTokenizerClass.from_pretrained(args.model)
 
+    MyModelClass, MyTokenizerClass = get_model_and_tokenizer(args.model)
+    tokenizer = MyTokenizerClass.from_pretrained(args.model)
+    model_inference = MyModelClass.from_pretrained(args.model)
+    model_inference = prepare_model_for_kbit_training(model_inference)
+    peft_config = LoraConfig(
+        task_type=TaskType.SEQ_2_SEQ_LM,
+        r=16,
+        lora_alpha=8,
+        lora_dropout=0.1,
+        target_modules=[
+            "k",
+            "q",
+            "v",
+            # "o",
+        ],
+    )
+    model_inference = get_peft_model(model_inference, peft_config)
+
     train_data = NLPFewshotGymSingleTaskData(
         logger, args, args.train_file, data_type="train", is_training=True
     )
@@ -74,47 +92,24 @@ def run(args, logger, prefix):
 
     best_model_state_dict = None
 
+    model = MyModelClass.from_pretrained(args.model)
+    model = prepare_model_for_kbit_training(model)
+
+    peft_config = LoraConfig(
+        task_type=TaskType.SEQ_2_SEQ_LM,
+        r=16,
+        lora_alpha=32,
+        lora_dropout=0.1,
+        target_modules=[
+            "k",
+            "q",
+            "v",
+        ],
+    )
+    model = get_peft_model(model, peft_config)
+    task_vectors = [v for k, v in task_vectors.items()]
+    model = WeightedT5(model, task_vectors, blockwise=True)
     if args.do_train:
-        model = MyModelClass.from_pretrained(args.model)
-        model = prepare_model_for_kbit_training(model)
-
-        peft_config = LoraConfig(
-            task_type=TaskType.SEQ_2_SEQ_LM,
-            r=16,
-            lora_alpha=32,
-            lora_dropout=0.1,
-            target_modules=[
-                "k",
-                "q",
-                "v",
-            ],
-        )
-        model = get_peft_model(model, peft_config)
-        print(len(model.state_dict()))
-        for idx, (k, p) in enumerate(model.named_parameters()):
-            print(idx, k)
-        for k in task_vectors.keys():
-            print(k, len(task_vectors[k].vector.keys()))
-        task_vectors = [v for k, v in task_vectors.items()]
-        model = WeightedT5(model, task_vectors, blockwise=False)
-
-        # new_state_dict = {}
-        # cntd = 0
-        # for key in pretrained_weights:
-        #     if "lora" in key:
-        #         print(key)
-        #         cntd += 1
-        #         aux = None
-        #         for idx, taskname in enumerate(args.tasks):
-        #             if idx == 0:
-        #                 aux = 0.2 * task_vectors[taskname].vector[key]
-        #             else:
-        #                 aux += 0.8 * task_vectors[taskname].vector[key]
-        #         new_state_dict[key] = aux
-        #     else:
-        #         new_state_dict[key] = pretrained_weights[key]
-        # model.load_state_dict(new_state_dict)
-
         if torch.cuda.is_available():
             model.to(torch.device("cuda"))
 
@@ -127,55 +122,26 @@ def run(args, logger, prefix):
             num_training_steps=args.total_steps,
         )
         best_dev_performance, best_model_state_dict = train(
-            args, logger, model, train_data, dev_data, optimizer, scheduler, prefix
+            args,
+            logger,
+            model,
+            train_data,
+            dev_data,
+            optimizer,
+            scheduler,
+            prefix,
+            model_inference,
         )
     else:
         best_dev_performance = 0.0
     if args.do_predict:
         # if args.do_train:   and best_model_state_dict is not None:
-
-        model = MyModelClass.from_pretrained(args.model)
-        model = prepare_model_for_kbit_training(model)
-
-        peft_config = LoraConfig(
-            # the task to train for (sequence-to-sequence language modeling in this case)
-            task_type=TaskType.SEQ_2_SEQ_LM,
-            # the dimension of the low-rank matrices
-            r=16,
-            # the scaling factor for the low-rank matrices
-            lora_alpha=8,
-            # the dropout probability of the LoRA layers
-            lora_dropout=0.1,
-            target_modules=[
-                "k",
-                "q",
-                "v",
-                # "o",
-            ],
-        )
-        model = get_peft_model(model, peft_config)
-        pretrained_weights = model.state_dict()
-        new_state_dict = {}
-        cntd = 0
-        for key in pretrained_weights:
-            if "lora" in key:
-                cntd += 1
-                aux = None
-                for idx, taskname in enumerate(args.tasks):
-                    if idx == 0:
-                        aux = 0.2 * task_vectors[taskname].vector[key]
-                    else:
-                        aux += 0.8 * task_vectors[taskname].vector[key]
-                new_state_dict[key] = aux
-            else:
-                new_state_dict[key] = pretrained_weights[key]
-        model.load_state_dict(new_state_dict)
-        print(cntd)
+        #     model.load_state_dict(best_model_state_dict
         logger.info("Loading checkpoint from CPU")
 
-        if torch.cuda.is_available():
-            model.to(torch.device("cuda"))
-        model.eval()
+        # if torch.cuda.is_available():
+        #     model.to(torch.device("cuda"))
+        model_inference.eval()
 
         data_type = "test" if "test" in args.test_file else "dev"
         test_data = NLPFewshotGymSingleTaskData(
@@ -184,9 +150,14 @@ def run(args, logger, prefix):
 
         test_data.load_dataset(tokenizer)
         test_data.load_dataloader()
-
+        print(model.coef)
         test_performance = inference(
-            model, test_data, prefix, save_predictions=True, verbose=True
+            test_data,
+            prefix,
+            model_inference=model_inference,
+            model=model,
+            save_predictions=True,
+            verbose=True,
         )
         logger.info(
             "%s on %s data: %.2f"
@@ -196,7 +167,20 @@ def run(args, logger, prefix):
     return best_dev_performance, test_performance
 
 
-def train(args, logger, model, train_data, dev_data, optimizer, scheduler, prefix):
+def train(
+    args,
+    logger,
+    model,
+    train_data,
+    dev_data,
+    optimizer,
+    scheduler,
+    prefix,
+    model_inference,
+):
+    # if torch.cuda.is_available():
+    #     model_inference.to(torch.device("cuda"))
+
     model.train()
     global_step = 0
     global_batch = 0
@@ -217,7 +201,6 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler, prefi
 
             batch[0], batch[1] = trim_batch(batch[0], pad_token_id, batch[1])
             batch[2], batch[3] = trim_batch(batch[2], pad_token_id, batch[3])
-
             outputs = model(
                 input_ids=batch[0],
                 attention_mask=batch[1],
@@ -226,7 +209,6 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler, prefi
                 is_training=True,
             )
             lm_logits = outputs[0]
-            # print(lm_logits.shape)
             lprobs = F.log_softmax(lm_logits, dim=-1)
             loss, _ = label_smoothed_nll_loss(
                 lprobs,
@@ -252,9 +234,11 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler, prefi
 
                 if global_step % args.eval_period == 0:
                     model.eval()
+                    # ## Reconstructing the model with the new weights.
+                    # model_inference = model.transfer_weights(model_inference)
                     # reconstruct the model and store coeficient to remove the model from the gpu.
                     curr_performance = inference(
-                        model if args.n_gpu == 1 else model.module, dev_data, prefix
+                        dev_data, prefix, model_inference=model_inference, model=model
                     )
                     logger.info(
                         "Step %d Train loss %.2f %s %s on epoch=%d"
@@ -273,12 +257,12 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler, prefi
                         }
                         # model_state_dict = {k:v.cpu() for (k, v) in model.state_dict().items()}
                         # torch.save(model_state_dict, os.path.join(args.output_dir, "best-model.pt"))
-                        model.save_pretrained(
-                            os.path.join(
-                                args.output_dir,
-                                f"{prefix}_{args.learning_rate}_{args.train_batch_size}_best-model.pt",
-                            )
-                        )
+                        # model.save_pretrained(
+                        #     os.path.join(
+                        #         args.output_dir,
+                        #         f"{prefix}_{args.learning_rate}_{args.train_batch_size}_best-model.pt",
+                        #     )
+                        # )
                         logger.info(
                             "Not saving model with best %s: %s -> %s on epoch=%d, global_step=%d"
                             % (
@@ -312,22 +296,24 @@ def train(args, logger, model, train_data, dev_data, optimizer, scheduler, prefi
     return best_performance, best_model_state_dict
 
 
-def inference(model, dev_data, prefix, save_predictions=False, verbose=False):
+def inference(
+    dev_data, prefix, model_inference, model=None, save_predictions=False, verbose=False
+):
     print("HERE apply the coef into the weights to initialize a new model.")
-    print(model.state_dict().keys())
+    model_inference = model.transfer_weights(model_inference)
     predictions = []
     # bos_token_id = dev_data.tokenizer.bos_token_id
     for i, batch in enumerate(dev_data.dataloader):
-        if torch.cuda.is_available():
-            batch = [b.to(torch.device("cuda")) for b in batch]
+        # if torch.cuda.is_available():
+        #     batch = [b.to(torch.device("cuda")) for b in batch]
         pad_token_id = dev_data.tokenizer.pad_token_id
         batch[0], batch[1] = trim_batch(batch[0], pad_token_id, batch[1])
-        outputs = model.generate(
+        outputs = model_inference.generate(
             input_ids=batch[0],
             attention_mask=batch[1],
             num_beams=dev_data.args.num_beams,
             max_length=dev_data.args.max_output_length,
-            decoder_start_token_id=model.config.decoder_start_token_id,
+            decoder_start_token_id=model_inference.config.decoder_start_token_id,
             early_stopping=dev_data.gen_early_stop,
         )
         for input_, output in zip(batch[0], outputs):

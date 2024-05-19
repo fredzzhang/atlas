@@ -26,7 +26,6 @@ class AI2_ARC(FewshotGymTextToTextDataset):
                 + datapoint["choices"]["text"][i]
                 + " "
             )
-        print(choices_string)
         return choices_string, answer_string
 
     def map_hf_dataset_to_list(self, hf_dataset, split_name):
@@ -43,7 +42,6 @@ class AI2_ARC(FewshotGymTextToTextDataset):
 
 
 def main():
-    print("HERE")
     dataset = AI2_ARC()
     for seed in [100, 13, 21]:
         train, dev, test = dataset.generate_k_shot_data(

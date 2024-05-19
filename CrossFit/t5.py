@@ -61,9 +61,6 @@ class MyT5(T5ForConditionalGeneration):
             return_dict=return_dict,
         )
 
-        # print(type(outputs))
-        # print(outputs[0])
-
         # According to https://github.com/huggingface/transformers/blob/7b75aa9fa55bee577e2c7403301ed31103125a35/src/transformers/modeling_t5.py
         # outputs[0] should be lm_logits
 

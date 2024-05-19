@@ -167,7 +167,6 @@ def run(args, logger, prefix):
                     f"{prefix}_{args.learning_rate}_{args.train_batch_size}_best-model.pt",
                 ),
             )
-            print("$$$$$$$$$$$$$$$4 HERE CHECKPOINT")
             logger.info("Loading checkpoint from CPU")
         else:
             checkpoint = os.path.join(args.output_dir, args.predict_checkpoint)
