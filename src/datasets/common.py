@@ -152,6 +152,8 @@ def get_dataloader(dataset, is_train, args, image_encoder=None):
     else:        
         dataloader = dataset.train_loader if is_train else dataset.test_loader
 
+    print(len(dataset.train_loader.dataset), len(dataset.test_loader.dataset))
+
     if args.subsample is not None and is_train:
         src = dataloader.dataset
         subsample_size = int(len(src) * args.subsample)

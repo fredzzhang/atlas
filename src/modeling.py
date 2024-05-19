@@ -32,12 +32,13 @@ class ImageEncoder(nn.Module):
         self.cache_dir = args.cache_dir
 
         if not keep_lang and hasattr(self.model, "transformer"):
-            delattr(self.model, "transformer")            
-            delattr(self.model, "token_embedding")
-            delattr(self.model, "ln_final")
-            delattr(self.model, "positional_embedding")
-            delattr(self.model, "text_projection")                                
-            delattr(self.model, "logit_scale")
+            delattr(self.model, "transformer")
+            if args.finetuning_mode != 'linear' and False:
+                delattr(self.model, "token_embedding")
+                delattr(self.model, "ln_final")
+                delattr(self.model, "positional_embedding")
+                delattr(self.model, "text_projection")                                
+                delattr(self.model, "logit_scale")
             
     def forward(self, images):
         assert self.model is not None

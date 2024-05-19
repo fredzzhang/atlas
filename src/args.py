@@ -414,13 +414,19 @@ def parse_arguments():
         "--full-addition",
         default=False,
         action='store_true',
-        help="Task addition on 22 datasets"
+        help="Task addition on 22 datasets."
     )
     parser.add_argument(
         "--negation",
         default=False,
         action='store_true',
         help="Task negation"
+    )
+    parser.add_argument(
+        "--full-negation",
+        default=False,
+        action='store_true',
+        help="Task negation on 22 datasets."
     )
     parser.add_argument(
         "--random-wise",
@@ -434,6 +440,7 @@ def parse_arguments():
         action='store_true',
         help="FT clip (test time adapt)"
     )
+    parser.add_argument("--neg-coef", type=float, default=2., help="Task negation coefficient")
     parsed_args = parser.parse_args()
     parsed_args.device = "cuda" if torch.cuda.is_available() else "cpu"
 

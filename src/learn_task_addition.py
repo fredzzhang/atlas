@@ -36,7 +36,7 @@ import gc
 
 
 import torch.multiprocessing
-torch.multiprocessing.set_sharing_strategy('file_system')
+torch.multiprocessing.set_sharing_strategy('file_descriptor')
 
 
 @torch.jit.script
@@ -139,11 +139,6 @@ def main(rank, args):
                 "MNIST", "RESISC45", "SUN397", "SVHN"
             ]
             
-    elif args.negation:
-        pool = [
-            "Cars", "DTD", "EuroSAT", "GTSRB",
-            "MNIST", "RESISC45", "SUN397", "SVHN", "ImageNet"
-        ]        
     else:
         pool = [
             "Cars", "DTD", "EuroSAT", "GTSRB",
@@ -355,13 +350,7 @@ def train(task_vectors, args):
         model = ImageClassifier(image_encoder, classification_head)        
     model.freeze_head()
 
-    #Using the TIP augmentations to learn the coeficients. The larger scale=(0.5, 1) of the RandomResizedCrop is important to get good results on some datasets.
-    preprocess_fn = torchvision.transforms.Compose([
-        torchvision.transforms.RandomResizedCrop(size=224, scale=(0.5, 1), interpolation=torchvision.transforms.InterpolationMode.BICUBIC),
-        torchvision.transforms.RandomHorizontalFlip(p=0.5),
-    ] + model.val_preprocess.transforms[-3:])
-
-    preprocess_fn = model.val_preprocess
+    preprocess_fn = model.train_preprocess
     
     if 'simclr' in args.loss_fn or 'ssl' in args.loss_fn:
         size = 224
@@ -390,7 +379,11 @@ def train(task_vectors, args):
     if args.addition or args.negation:
         data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size//len(pool), shuffle=True, num_workers=args.workers, persistent_workers=args.persistant_workers, drop_last=True)
         
-        all_loaders = [get_dataloader(get_dataset(t, preprocess_fn, location=args.data_location, batch_size=args.batch_size//len(pool)), is_train=False, args=args, image_encoder=None) for t in [p for p in pool if p != test_dataset.split('Val')[0]]]
+        #all_loaders = [get_dataloader(get_dataset(t, preprocess_fn, location=args.data_location, batch_size=args.batch_size//len(pool)), is_train=False, args=args, image_encoder=None) for t in [p for p in pool if p != test_dataset.split('Val')[0]]]
+        all_loaders = [torch.utils.data.DataLoader(get_dataset(t, preprocess_fn, location=args.data_location, batch_size=args.batch_size//len(pool)).train_dataset, batch_size=args.batch_size//len(pool), shuffle=True, num_workers=args.workers, persistent_workers=args.persistant_workers, drop_last=True) for t in [p for p in pool if p != test_dataset.split('Val')[0]]]
+        for loader in all_loaders:
+            loader.shuffle=True
+            
         all_loaders = [fabric.setup_dataloaders(loader) for loader in all_loaders]
         print([len(l) for l in all_loaders])
     else:
@@ -817,7 +810,7 @@ def train(task_vectors, args):
                 
             elif args.negation:
                 losses = [-F.cross_entropy(lo, l) for lo, l in zip(logits, labels)]
-                losses[-1] = - losses[-1]
+                losses[-1] = args.neg_coef * losses[-1] * losses[0].detach()
                 loss = sum(losses)
 
             elif args.loss_fn == 'cross_entropy':
@@ -1182,14 +1175,13 @@ def train(task_vectors, args):
                             best_alpha = alpha_vec.cpu().clone()
 
     #Load best coefs
-    if isinstance(model.image_encoder.coef, list):
-        for i in range(len(model.image_encoder.coef)):
-            model.image_encoder.coef[i].data = coefs[i].to(model.image_encoder.coef[i].data)            
-    elif args.finetuning_mode == "linear":
+    if args.finetuning_mode == "linear":
         model.image_encoder.model.coef.data = coefs.to(model.image_encoder.model.coef.data)
         if args.attn:
             model.image_encoder.model.coef1.data = coefs1.to(model.image_encoder.model.coef.data)
-    
+    elif isinstance(model.image_encoder.coef, list):
+        for i in range(len(model.image_encoder.coef)):
+            model.image_encoder.coef[i].data = coefs[i].to(model.image_encoder.coef[i].data)                
     else:
         model.image_encoder.coef.data = coefs.to(model.image_encoder.coef.data)
         if args.attn:
@@ -1303,24 +1295,48 @@ if __name__ == "__main__":
             "UCF101": epochs
         }
 
-    if args.datasets is not None:
-        datasets = {k:datasets[k] for k in args.datasets}
-
     if args.addition:
         datasets = {'DTD':args.epochs}
         
     if args.negation:
         epochs = args.epochs
-        datasets = {
-            "Cars": epochs,
-            "DTD": epochs,
-            "EuroSAT": epochs,
-            "GTSRB": epochs,
-            "MNIST": epochs,
-            "RESISC45": epochs,
-            "SUN397": epochs,
-            "SVHN": epochs,
-        }
+        if args.full_negation:
+            datasets = {
+                "Cars": epochs,
+                "DTD": epochs,
+                "EuroSAT": epochs,
+                "GTSRB": epochs,
+                "MNIST": epochs,
+                "RESISC45": epochs,
+                "SUN397": epochs,
+                "SVHN": epochs,
+                "CIFAR10": epochs,
+                "CIFAR100": epochs,        
+                "STL10": epochs,
+                "Food101": epochs,
+                "Caltech256": epochs,
+                "FGVCAircraft": epochs,
+                "Flowers102": epochs,
+                "OxfordIIITPet": epochs,
+                "CUB200": epochs,
+                "PascalVOC": epochs,
+                "Country211": epochs,
+                "Caltech101": epochs,
+                "UCF101": epochs
+            }
+        else:
+            datasets = {
+                "Cars": epochs,
+                "DTD": epochs,
+                "EuroSAT": epochs,
+                "GTSRB": epochs,
+                "MNIST": epochs,
+                "RESISC45": epochs,
+                "SUN397": epochs,
+                "SVHN": epochs,
+            }
+    if args.datasets is not None:
+        datasets = {k:datasets[k] for k in args.datasets}
 
     # HACK: Some command line arguments are overwritten by defaults here.
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.

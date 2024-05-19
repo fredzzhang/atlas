@@ -220,7 +220,7 @@ def finetune(args):
         # Test the model each epoch 
         image_encoder = ddp_model.image_encoder
         if False:
-            eval_single_dataset(image_encoder, train_dataset, dataset, args)
+            eval_single_dataset(image_encoder, train_dataset, args)
             
     if args.save is not None and (fabric.global_rank == 0) and args.semi is None and args.subsample is None:
         zs_path = (
@@ -240,7 +240,7 @@ def finetune(args):
             )
             image_encoder.save(ft_path)
             
-    metrics = eval_single_dataset(image_encoder, train_dataset, dataset, args, test=True)
+    metrics = eval_single_dataset(image_encoder, train_dataset,  args, test=True)
     if args.semi is not None or args.subsample is not None: 
         with open(os.path.join(args.fname, str(args.seed), "results.txt"), 'a') as f:
             f.writelines([f"{train_dataset.replace('Val','')}\n", f"Base accuracy 0.0, best accuracy {metrics['top1']}\n"])
