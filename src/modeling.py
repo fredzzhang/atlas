@@ -33,7 +33,7 @@ class ImageEncoder(nn.Module):
 
         if not keep_lang and hasattr(self.model, "transformer"):
             delattr(self.model, "transformer")
-            if args.finetuning_mode != 'linear' and False:
+            if args.finetuning_mode == 'standard':
                 delattr(self.model, "token_embedding")
                 delattr(self.model, "ln_final")
                 delattr(self.model, "positional_embedding")
