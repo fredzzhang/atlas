@@ -263,8 +263,9 @@ class ImageEncoder_(nn.Module):
         """A wrapper class to enable compositions of task vectors"""
         super().__init__()
         
-        if args.lora:
+        if args.lora or args.tune_lora:
             model.model, params = utils.apply_lora(model.model, rank=args.rank)
+            self.lora_params = params
            
         func, params, self.buffer = make_functional_with_buffers(model)
         self.base_func = [func]
@@ -280,13 +281,7 @@ class ImageEncoder_(nn.Module):
         self.buffer_index = [-1] #-1 for unimportant values such as attn mask and num_batches_tracked (equal to 0/-inf in task vectors)
         self.norm_params = []
         for i, (p, (name, _)) in enumerate(zip(self.params, model.named_parameters())):
-            if ".visual" not in name:
-                p.requires_grad = False
-            elif args.tune_clip:
-                p.requires_grad = True
-            else:
-                p.requires_grad = False
-                
+            p.requires_grad = False                
             self.names.append(name)
             
             if 'attn.in_proj' in name:

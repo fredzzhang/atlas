@@ -337,6 +337,12 @@ def parse_arguments():
         help="Tune the clip backbone together with the TVs."
     )
     parser.add_argument(
+        "--tune-lora",
+        default=False,
+        action="store_true",
+        help="Tune a lora together with the TVs."
+    )
+    parser.add_argument(
         "--merge",
         default=False,
         action='store_true',

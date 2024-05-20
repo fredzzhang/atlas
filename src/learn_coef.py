@@ -370,17 +370,27 @@ def train(task_vectors, args):
         'simclr_mixup': simclr_mixup_loss,
     }[args.loss_fn]
 
+    params = [p for p in model.parameters() if p.requires_grad]
     if args.clip_ft:
         params = [model.image_encoder.params[i] for i in model.image_encoder.norm_params]
         for p in params:
+            p.requires_grad = True      
+        print(f"Trainable params {sum([p.numel() for p in params])}")
+    elif args.tune_clip:
+        if args.tune_lora:
+            params_bb = [p for n, p in zip(model.image_encoder.names, model.image_encoder.params) if ".visual" in n and 'lora' in n]
+        else:
+            params_bb = [p for n, p in zip(model.image_encoder.names, model.image_encoder.params) if ".visual" in n]
+            
+        for p in params_bb:
             p.requires_grad = True
+            
+        print(f"Trainable params {sum([p.numel() for p in params]) + sum([p.numel() for p in params_bb])}")
     else:
-        params = [p for p in model.parameters() if p.requires_grad]
-
-    print(f"Trainable params {sum([p.numel() for p in params])}")
+        print(f"Trainable params {sum([p.numel() for p in params])}")
     
     if args.tune_clip:
-        optimizer = torch.optim.AdamW([{'params': [model.image_encoder.coef] + [model.image_encoder.coef1]}, {'params': model.image_encoder.params}], lr=args.lr, weight_decay=args.wd)
+        optimizer = torch.optim.AdamW([{'params': params}, {'params': params_bb}], lr=args.lr, weight_decay=args.wd)
     else:
         optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
 
@@ -442,7 +452,10 @@ def train(task_vectors, args):
 
         # Evaluate before each epoch
         if args.lr_scheduler=="annealing":
-            adjust_lr(optimizer, lrs[epoch], [1, .0001])#Lower lr for clip backbone in case of args.tune_clip
+            if args.tune_lora:
+                adjust_lr(optimizer, lrs[epoch], [1, .01])
+            else:
+                adjust_lr(optimizer, lrs[epoch], [1, .0001]) #Lower lr for clip backbone in case of args.tune_clip
             
         if True:#is_main_process():
             # We only need to evaluate the model on the first GPU.
@@ -695,8 +708,8 @@ def train(task_vectors, args):
                 #model.image_encoder.coef1.data = (torch.ones(model.module.image_encoder.coef1.data.shape) * sims[:, None, None]).to(model.module.image_encoder.coef1.data)
                 model.image_encoder.coef1.data = ((torch.rand(model.module.image_encoder.coef1.data.shape) - .5) * 2).to(model.module.image_encoder.coef1.data)
 
-        if args.tune_clip:# or 'RN' in args.model:
-            model.train() #Compute batch norm stats
+        #if args.tune_clip:# or 'RN' in args.model:
+        #    model.train() #Compute batch norm stats
                        
         for i, batch in enumerate(data_loader):
             start_time = time.time()
@@ -1227,11 +1240,12 @@ if __name__ == "__main__":
         datasets = {k:datasets[k] for k in args.datasets}
 
     if args.subsample is not None:
-        datasets["ImageNet"] = 1
+        datasets["ImageNet"] = 5
     # HACK: Some command line arguments are overwritten by defaults here.
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 32 if args.model == "ViT-L-14" else 128
     args.num_grad_accumulation = 4 if args.model == "ViT-L-14" else 1
+    
     args.print_every = 10
 
     if "RN" in args.model:#RN models do not have attention layers. Leaving attn as True will cause a problem with coef1 receiving no gradients.
