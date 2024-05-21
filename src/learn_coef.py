@@ -1241,7 +1241,7 @@ if __name__ == "__main__":
         datasets = {k:datasets[k] for k in args.datasets}
 
     if args.subsample is not None:
-        datasets["ImageNet"] = 5
+        datasets["ImageNet"] = 1
     # HACK: Some command line arguments are overwritten by defaults here.
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 32 if args.model == "ViT-L-14" else 128

@@ -242,7 +242,9 @@ def eval_single_train_dataset(image_encoder, dataset_name, dataloader, args):
 
             top1 = correct / n
 
+    indexes = indexes[:len(features)]
     features = torch.cat(features, dim=0)
+    print(features.shape)
     features = features[torch.argsort(indexes)]
     metrics = {"top1": top1, "conf":confs, "preds":preds, "targets":targets, "full_preds":full_preds, "features":features}
     
