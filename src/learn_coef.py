@@ -322,7 +322,9 @@ def train(task_vectors, args):
         torchvision.transforms.RandomHorizontalFlip(p=0.5),
     ] + model.val_preprocess.transforms[-3:])
 
-    preprocess_fn = model.val_preprocess
+    #preprocess_fn = model.val_preprocess
+    if args.subsample is not None:
+        preprocess_fn = model.train_preprocess
     
     if 'simclr' in args.loss_fn or 'ssl' in args.loss_fn:
         size = 224
