@@ -12,6 +12,7 @@ import json
 import torch
 import torchvision
 
+from copy import deepcopy
 from torch.cuda.amp import GradScaler
 from src.linearize import LinearizedImageEncoder
 from src.modeling import ImageEncoder, ImageClassifier
@@ -36,6 +37,21 @@ def lp_reg(x, p=None, gamma=0.5) -> torch.Tensor:
 
 def main(rank, args):
 
+    # HACK Load the results for blockwise gradient selection
+    selection = torch.load("/home/frederic/dev/aries/cache/grads_dict.pt", map_location='cpu')
+    dataset_idx = selection['datasets'].index(args.datasets[0])
+    all_datasets = selection['datasets']
+    indices = selection['grads'][dataset_idx].argsort(dim=-1, descending=True)
+    ix, iy = torch.nonzero(indices >= dataset_idx).unbind(1)
+    indices[ix, iy] += 1
+    # Use zero index for the unused coefficients
+    indices = torch.cat([
+        torch.zeros(3, 21, dtype=torch.int64),
+        indices,
+        torch.zeros(3, 21, dtype=torch.int64),
+    ])
+
+    pretrained = torch.load(f"{args.save}/CarsVal/zeroshot.pt", map_location='cpu').state_dict()
     # Load the individual task vectors.
     pool = [
         "Cars", "DTD", "EuroSAT", "GTSRB", "MNIST", "RESISC45", "SUN397", "SVHN",
@@ -53,14 +69,44 @@ def main(rank, args):
             finetuned_checkpoint = f"{args.save}/{dataset}Val/finetuned.pt"
             task_vectors[dataset] = NonLinearTaskVector(pretrained_checkpoint, finetuned_checkpoint)
 
-    args.rank = rank
-    for dataset in args.datasets:
-        args.target_dataset = dataset + "Val"
-        print("=" * 100)
-        print(f"Learning task vector coefficients on {dataset} with {args.model} ")
-        print("=" * 100)
+    new_task_vectors = {}
+    for j, dataset in enumerate(task_vectors):
+        # HACK Skip the last task vector
+        if j == 21:
+            continue
+        # HACK Override the task vectors with random values
+        if args.random_task_vector:
+            for k in task_vectors[dataset].vector:
+                mean = pretrained[k].mean()
+                std = pretrained[k].var().sqrt()
+                task_vectors[dataset].vector[k] = std * torch.randn_like(task_vectors[dataset].vector[k]) + mean
+        # HACK Permuate task vectors based on blockwise gradient selection
+        else:
+            new_task_vectors[dataset] = deepcopy(task_vectors[dataset])
+            for i, k in enumerate(task_vectors[dataset].vector):
+                mean = pretrained[k].mean()
+                std = pretrained[k].var().sqrt()
+                new_task_vectors[dataset].vector[k] = task_vectors[all_datasets[indices[i, j]]].vector[k]
+                # cur_mean = new_task_vectors[dataset].vector[k].mean()
+                # cur_std = new_task_vectors[dataset].vector[k].std()
+                # new_task_vectors[dataset].vector[k] = (new_task_vectors[dataset].vector[k] - cur_mean) / cur_std * std + mean
+    
+    # HACK Select a fixed number of task vectors
+    if args.random_task_vector:
+        task_vectors = list(task_vectors.values())[:args.num_task_vector]
+    else:
+        task_vectors = list(new_task_vectors.values())[:args.num_task_vector]
 
-        train(task_vectors, args)
+    args.rank = rank
+    # HACK assume we are just using one dataset here
+    # for dataset in args.datasets:
+    dataset = args.datasets[0]
+    args.target_dataset = dataset + "Val"
+    print("=" * 100)
+    print(f"Learning task vector coefficients on {dataset} with {args.model} ")
+    print("=" * 100)
+
+    train(task_vectors, args)
 
 def train(task_vectors, args):
 
@@ -78,9 +124,9 @@ def train(task_vectors, args):
     if linearized_finetuning:
         print("Using linearized fine-tuning.")
 
-    orig_dataset = target_dataset.replace("Val", "")
+    # orig_dataset = target_dataset.replace("Val", "")
     # Remove the task vector for the target task
-    task_vectors = [v for k, v in task_vectors.items() if orig_dataset != k]
+    # task_vectors = [v for k, v in task_vectors.items() if orig_dataset != k]
 
     if args.finetuning_mode == "linear":
         image_encoder = LinearizedImageEncoder(args, keep_lang=False)
@@ -238,28 +284,28 @@ def train(task_vectors, args):
 if __name__ == "__main__":
 
     target_datasets = [
-        "Cars",
-        "DTD",
-        "EuroSAT",
+        # "Cars",
+        # "DTD",
+        # "EuroSAT",
         "GTSRB",
-        "MNIST",
-        "RESISC45",
-        "SUN397",
-        "SVHN",
-        "CIFAR10",
-        "CIFAR100",
-        "ImageNet",
-        "STL10",
-        "Food101",
-        "Caltech101",
-        "Caltech256",
-        "FGVCAircraft",
-        "Flowers102",
-        "OxfordIIITPet",
-        "CUB200",
-        "PascalVOC",
-        "Country211",
-        "UCF101",
+        # "MNIST",
+        # "RESISC45",
+        # "SUN397",
+        # "SVHN",
+        # "CIFAR10",
+        # "CIFAR100",
+        # "ImageNet",
+        # "STL10",
+        # "Food101",
+        # "Caltech101",
+        # "Caltech256",
+        # "FGVCAircraft",
+        # "Flowers102",
+        # "OxfordIIITPet",
+        # "CUB200",
+        # "PascalVOC",
+        # "Country211",
+        # "UCF101",
     ]
 
     args = parse_arguments()

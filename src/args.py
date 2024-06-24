@@ -18,6 +18,18 @@ import torch
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--num-task-vector",
+        default=10,
+        type=int,
+        required=True,
+        help="Number of task vectors to be used."
+    )
+    parser.add_argument(
+        "--random-task-vector",
+        action="store_true",
+        default=False
+    )
+    parser.add_argument(
         "--data-location",
         type=str,
         default=os.path.expanduser("~/data"),
