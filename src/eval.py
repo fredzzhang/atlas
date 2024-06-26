@@ -37,6 +37,7 @@ def eval_single_dataset(image_encoder, dataset_name, args):
         model.val_preprocess,
         location=args.data_location,
         batch_size=args.batch_size,
+        num_workers=2,
     )
     dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
     device = args.device

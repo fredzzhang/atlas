@@ -79,7 +79,7 @@ def main(rank, args):
             location=args.data_location,
             batch_size=int(args.batch_size / n_datasets),
             num_workers=2),
-        is_train=True, args=args, image_encoder=None
+        is_train=False, args=args, image_encoder=None
     ) for dataset in datasets]
     num_batches = [len(dataloader) for dataloader in dataloaders]
     # Select the dataset with smallest size as the primary iterator.
@@ -100,7 +100,7 @@ def main(rank, args):
     if args.print_every * 10 < num_batches:
         print_every = int(num_batches / 10)
     elif args.print_every * 4 > num_batches:
-        print_every = int(num_batches / 4)
+        print_every = max(int(num_batches / 4), 1)
     else:
         print_every = args.print_every
 
@@ -164,8 +164,9 @@ def main(rank, args):
             )
             data_time = time.time() - start_time
             
+            split = [len(batch["images"]),] + [len(r_batch["images"]) for r_batch in rmng_batch]
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                logits = ddp_model(inputs, [int(args.batch_size / n_datasets)] * n_datasets)
+                logits = ddp_model(inputs, split)
                 labels = [batch["labels"].cuda(),] + [r_batch["labels"].cuda() for r_batch in rmng_batch]
                 all_losses = [loss_fn(x, y) for x, y in zip(logits, labels)]
                 loss = sum(all_losses)
@@ -276,6 +277,8 @@ if __name__ == "__main__":
         args.save = f"checkpoints_{args.seed}/{args.model}"
     else:
         args.save = f"checkpoints/{args.model}"
+    if args.subsample is not None:
+        args.save += f"_{args.subsample*100:.0f}perc"
     with open(os.path.join(args.save, "zeroshot_accuracies.json"), 'r') as f:
         args.zs_acc = json.load(f)
 

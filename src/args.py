@@ -24,6 +24,12 @@ def parse_arguments():
         help="The root directory for the datasets.",
     )
     parser.add_argument(
+        "--subsample",
+        default=None,
+        type=float,
+        help="Percentage of data to subsample."
+    )
+    parser.add_argument(
         "--eval-datasets",
         default=None,
         type=lambda x: x.split(","),

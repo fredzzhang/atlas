@@ -1,16 +1,13 @@
 import os
 import torch
-import json
 import glob
 import collections
 import random
 
-import numpy as np
-
 from tqdm import tqdm
 
 import torchvision.datasets as datasets
-from torch.utils.data import Dataset, DataLoader, Sampler
+from torch.utils.data import Dataset, DataLoader, Sampler, random_split
 
 
 class SubsetSampler(Sampler):
@@ -136,4 +133,17 @@ def get_dataloader(dataset, is_train, args, image_encoder=None):
         dataloader = DataLoader(feature_dataset, batch_size=args.batch_size, shuffle=is_train)
     else:
         dataloader = dataset.train_loader if is_train else dataset.test_loader
+
+    # Subsample a percentage of the training data if needed
+    if args.subsample is not None and is_train:
+        src = dataloader.dataset
+        subsample_size = int(len(src) * args.subsample)
+        lengths = [subsample_size, len(src) - subsample_size]
+        print(f"Subsampling dataloader from size {len(src)} to size {lengths[0]}.")
+        new_dataset, _ = random_split(src, lengths)
+        dataloader = DataLoader(
+            new_dataset,
+            batch_size=dataloader.batch_size,
+            num_workers=2,
+        )
     return dataloader
