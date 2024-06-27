@@ -127,7 +127,7 @@ class FeatureDataset(Dataset):
         return data
 
 
-def get_dataloader(dataset, is_train, args, image_encoder=None):
+def get_dataloader(dataset, is_train, args, image_encoder=None, subsample=False):
     if image_encoder is not None:
         feature_dataset = FeatureDataset(is_train, image_encoder, dataset, args.device)
         dataloader = DataLoader(feature_dataset, batch_size=args.batch_size, shuffle=is_train)
@@ -135,7 +135,7 @@ def get_dataloader(dataset, is_train, args, image_encoder=None):
         dataloader = dataset.train_loader if is_train else dataset.test_loader
 
     # Subsample a percentage of the training data if needed
-    if args.subsample is not None and is_train:
+    if args.subsample is not None and subsample:
         src = dataloader.dataset
         subsample_size = int(len(src) * args.subsample)
         lengths = [subsample_size, len(src) - subsample_size]

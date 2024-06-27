@@ -79,7 +79,7 @@ def main(rank, args):
             location=args.data_location,
             batch_size=int(args.batch_size / n_datasets),
             num_workers=2),
-        is_train=False, args=args, image_encoder=None
+        is_train=False, args=args, image_encoder=None, subsample=True
     ) for dataset in datasets]
     num_batches = [len(dataloader) for dataloader in dataloaders]
     # Select the dataset with smallest size as the primary iterator.
