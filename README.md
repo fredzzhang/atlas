@@ -7,7 +7,7 @@
 <p align="center">
   <a href="http://arxiv.org/abs/2407.02880">Preprint</a>
   <br/> <br/>
-  <img src="./assets/teaser_a.png" height="260">&nbsp;&nbsp;<img src="./assets/teaser_b.png" height="260">
+  <img src="./assets/teaser_a.png" height="270">&nbsp;&nbsp;<img src="./assets/teaser_b.png" height="270">
 </p>
 
 
