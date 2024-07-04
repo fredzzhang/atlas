@@ -8,6 +8,8 @@
   <a href="http://arxiv.org/abs/2407.02880">preprint</a>
 </p>
 
+<img src="./assets/teaser_a.pdf" align="center" height="150">&nbsp;&nbsp;<img src="./assets/teaser_b.pdf" align="center" height="150">
+
 This repository contains the official PyTorch implementation for the paper
 > Frederic Z. Zhang, Paul Albert, Cristian Rodriguez-Opazo, Anton van den Hengel, Ehsan Abbasnejad;
 _Knowledge Composition using Task Vectors with Learned Anisotropic Scaling_;
