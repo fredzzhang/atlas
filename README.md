@@ -8,7 +8,7 @@
   <a href="http://arxiv.org/abs/2407.02880">preprint</a>
 </p>
 
-<img src="./assets/teaser_a.png" align="center" height="270">&nbsp;&nbsp;<img src="./assets/teaser_b.png" align="right" height="270">
+<img src="./assets/teaser_a.png" align="center" height="265">&nbsp;&nbsp;<img src="./assets/teaser_b.png" align="right" height="265">
 
 This repository contains the official PyTorch implementation for the paper
 > Frederic Z. Zhang, Paul Albert, Cristian Rodriguez-Opazo, Anton van den Hengel, Ehsan Abbasnejad;
