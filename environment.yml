@@ -1,4 +1,4 @@
-name: ws
+name: atlas
 channels:
   - pytorch
   - nvidia
@@ -123,7 +123,6 @@ dependencies:
   - zlib=1.2.13=h5eee18b_0
   - zstd=1.5.5=hc292b87_0
   - pip:
-      - clip==1.0
       - contourpy==1.2.0
       - cycler==0.12.1
       - filelock==3.12.0
