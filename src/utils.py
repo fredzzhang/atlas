@@ -3,7 +3,8 @@ import pickle
 
 import numpy as np
 import torch
-
+import tqdm
+from src.datasets.common import maybe_dictionarize
 
 def assign_learning_rate(param_group, new_lr):
     param_group["lr"] = new_lr
@@ -139,3 +140,100 @@ def nonlinear_advantage(nonlinear_acc, linear_acc, num_classes):
     -1 indicates the opposite.
     """
     return (nonlinear_acc - linear_acc) / (1.0 - 1.0 / num_classes)
+
+class IndexWrapper(torch.nn.Module):
+    def __init__(self, dataset):
+        super().__init__()
+        self.dataset = dataset
+        
+    def __getitem__(self, index):
+        instance = self.dataset[index]
+        if isinstance(instance, dict):
+            instance["index"] = index
+            return instance
+        return *instance, index
+    
+    def __len__(self):
+        return len(self.dataset)
+    
+def get_n_shots_preds(dataset, shots, n_class, args):
+    index_dataset = IndexWrapper(dataset)
+    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size*2, shuffle=True, num_workers=8)
+    
+    targets = - torch.ones(len(dataset), dtype=torch.long)
+    with torch.no_grad():
+        for i, batch in enumerate(tqdm.tqdm(data_loader)):
+            batch = maybe_dictionarize(batch)
+            targets[batch["index"]] = batch["labels"].to(targets.device)
+            if i >= 1000:
+                print("Too much data, breaking ...")
+                break
+            
+    to_keep = torch.tensor([], dtype=torch.long)
+    for c in range(n_class):
+        cond = (targets == c)
+        ids_c = torch.arange(len(targets))[cond]
+        a = torch.randperm(len(ids_c))
+        to_keep = torch.cat((to_keep, ids_c[a[-shots:]]))
+        
+    return to_keep
+
+
+class TIPWrapper(torch.nn.Module):
+    def __init__(self, model, features_cache, labels):
+        super().__init__()
+        for p in model.parameters():
+            p.requires_grad = False    
+        self.model = model
+        
+        features_cache = features_cache.permute(1, 0).detach() #Just in case
+        self.adapter = torch.nn.Linear(features_cache.shape[0], features_cache.shape[1], bias=False)
+        self.adapter.weight.data = features_cache.t()
+        self.beta_alpha = torch.nn.Parameter(torch.tensor([1.,2.]))
+        self.labels = torch.nn.functional.one_hot(labels.long())
+        print("Num classes", self.model.classification_head.weight.shape[0])
+
+    def forward(self, x, tv_logits=None, feats=None):
+        if tv_logits is None:
+            tv_logits, feats = self.model(x, return_features=True)
+        
+        affinity = self.adapter(feats)
+        cache_logits = ((-1) * (self.beta_alpha[0] - self.beta_alpha[0] * affinity)).exp() @ self.labels.to(affinity)
+        logits = cache_logits * self.beta_alpha[1] + tv_logits
+        return logits
+    
+class LPPWrapper(torch.nn.Module):
+    def __init__(self, model, features_cache, labels, shots):
+        super().__init__()
+        for p in model.parameters():
+            p.requires_grad = False
+            
+        self.model = model        
+        from src.lpplusplus import init_lp
+        self.adapter, self.alpha_vec, self.lr_alpha, self.lr_temp = init_lp(features_cache, labels, self.model.classification_head.weight.T / 100., shots)
+
+    def forward(self, x, tv_logits=None, feats=None):
+        if tv_logits is None:
+            tv_logits, feats = self.model(x, return_features=True)
+            
+        vision_logits = self.adapter(feats)
+        logits = vision_logits + torch.ones(feats.shape[0], 1).to(feats) @ self.alpha_vec.to(feats) * tv_logits / 100
+        return logits
+    
+class _RepeatSampler(object):
+    """ Sampler that repeats forever.
+
+    Args:
+        sampler (Sampler)
+    """
+
+    def __init__(self, sampler, epochs):
+        self.sampler = sampler
+        self.epochs = epochs
+
+    def __iter__(self):
+        for _ in range(self.epochs):
+            yield from iter(self.sampler)
+
+    def __len__(self):
+        return self.epochs * len(self.sampler)

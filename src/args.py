@@ -14,13 +14,18 @@ import os
 
 import torch
 
+def int_or_float(value):
+    if '.' in value:
+        return float(value)
+    return int(value)
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--data-location",
         type=str,
-        default=os.path.expanduser("~/data"),
+        #default=os.path.expanduser("~/data"),
+        default=os.path.expanduser("~/Documents/data"),
         help="The root directory for the datasets.",
     )
     parser.add_argument(
@@ -57,9 +62,9 @@ def parse_arguments():
     )
     parser.add_argument(
         "--subsample",
-        default=None,
-        type=float,
-        help="Percentage of data to subsample."
+        default=1.0,
+        type=int_or_float,
+        help="Subsample the datasets with a float or specify the number of shots with an integer."
     )
     parser.add_argument(
         "--partition",
@@ -130,8 +135,14 @@ def parse_arguments():
     parser.add_argument(
         "--save",
         type=str,
-        default=None,
-        help="Optionally save a _classifier_, e.g. a zero shot classifier or probe.",
+        default='../aries/checkpoints',
+        help="Where to load zs weights and task vectors",
+    )
+    parser.add_argument(
+        "--logdir",
+        type=str,
+        default='results/',
+        help="Where to save results",
     )
     parser.add_argument(
         "--cache-dir",
@@ -170,6 +181,13 @@ def parse_arguments():
         help="Random seed.",
     )
     parser.add_argument(
+        "--adapter",
+        type=str,
+        default=None,
+        help="Adapter trained with aTLAS",
+        choices=["tip", "lpp", "tip_cot"],
+    )
+    parser.add_argument(
         "--finetuning-mode",
         choices=["standard", "linear", "posthoc", "none"],
         help="Whether to use linearized models or not.",
@@ -180,6 +198,7 @@ def parse_arguments():
         default=21,
         help="Number of evaluation points used to find optimal coefficient in task arithmetic.",
     )
+
     parsed_args = parser.parse_args()
     parsed_args.device = "cuda" if torch.cuda.is_available() else "cpu"
 
