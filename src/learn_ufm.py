@@ -17,7 +17,7 @@ from src.modeling import ImageEncoder, ImageClassifier
 from src.task_vectors import NonLinearTaskVector
 from src.composition import WeightedImageEncoder
 
-from src.utils import cosine_lr, get_n_shots, TIPWrapper, LPPWrapper, IndexWrapper, _RepeatSampler
+from src.utils import cosine_lr, get_preds, TIPWrapper, LPPWrapper, IndexWrapper, _RepeatSampler, TwoStreamBatchSampler, TwoAsymetricTransform
 from src.args import parse_arguments
 from src.eval import eval_single_dataset
 from src.datasets.registry import get_dataset
@@ -25,10 +25,36 @@ from src.heads import get_classification_head
 from src.datasets.common import get_dataloader, maybe_dictionarize
 from src.distributed import cleanup_ddp, distribute_loader, is_main_process, setup_ddp
 
-@torch.jit.script
-def softmax_entropy(x: torch.Tensor) -> torch.Tensor:
-    """Entropy of softmax distribution from logits."""
-    return -(x.softmax(1) * x.log_softmax(1)).sum(1)
+def ssl_loss_trusted(logits1: torch.Tensor, logits2: torch.Tensor, targets: torch.FloatTensor=None, trusted: torch.BoolTensor=None, thresh: float=0.99) -> torch.Tensor:
+    """
+    Computes a Unsupervised FixMatch (UFM) a Fixmatch style unsupervised loss given trusted samples.
+
+    Args:
+    logits1: network logits using an unaugmented view of the image
+    logits2: network logits using a strongly augemented view of the image (e.g. RandAugment or SimCLR augs)    
+    targets: the ground-truth labels for the batch, only used for the trusted part of the batch
+    trusted: a BoolTensor with the size of the batch indicating the trusted samples (True)
+    thresh: the threshold on the confidence value for selecting pseudo-labels. Using an adaptive threshold is recommended.
+    
+    Returns:
+    The UFM loss.
+    """
+    one_hot = logits1.softmax(1).detach()
+    
+    guessed_targets = one_hot * (.5) #temp sharp
+    guessed_targets = guessed_targets / guessed_targets.sum(dim=1, keepdim=True) #normalization
+    
+    if trusted is not None:
+        guessed_targets[trusted] = targets[trusted].to(guessed_targets)
+
+    one_hot = guessed_targets.detach()
+    one_hot = torch.nn.functional.one_hot(torch.argmax(guessed_targets, dim=1), num_classes=one_hot.shape[1]).float()
+    
+    w, _ = guessed_targets.max(1)
+    w = (w > thresh).to(logits2)
+    trusted = trusted.to(logits1)
+    return (torch.nn.functional.cross_entropy(logits2, guessed_targets, reduction='none') * w).sum() / w.sum()
+
 
 def main(rank, args):
     # Load the individual task vectors.
@@ -60,14 +86,9 @@ def main(rank, args):
         else:
             if not hasattr(args, 'zs_acc'):
                 args.zs_acc = {}
-
-        if type(args.subsample) == float:
-            data_amount = f"{args.subsample*100}%"
-        else:
-            data_amount = f"{args.subsample} shots"
             
         print("=" * 100)
-        print(f"Learning task vector coefficients on {dataset} with {args.model} - {data_amount}")
+        print(f"Learning task vector coefficients on {dataset} with {args.model} - test-time")
         print("=" * 100)
 
         comp_acc = train(task_vectors, args, comp_acc)
@@ -106,47 +127,55 @@ def train(task_vectors, args, comp_acc={}):
     ] + model.train_preprocess.transforms[-3:])
     
     dataset = get_dataset(
-        target_dataset,
-        preprocess_fn,
+        orig_dataset,
+        model.val_preprocess,
         location=args.data_location,
         batch_size=args.batch_size,
         num_workers=8,
     )
-
-    if type(args.subsample) == int:
-        if os.path.isfile(f"{args.save}/{target_dataset}/{args.subsample}_shots_{args.seed}.pt") and args.seed == 1:
-            to_keep = torch.load(f"{args.save}/{target_dataset}/{args.subsample}_shots_{args.seed}.pt")
-        else:
-            to_keep = get_n_shots(dataset.train_dataset, args.subsample, classification_head.out_features, args)
-            torch.save(to_keep, f"{args.save}/{target_dataset}/{args.subsample}_shots_{args.seed}.pt")
-            
-        r = len(to_keep) / args.batch_size
-        if r < 10:
-            over_sampling = 10/r
-            over_sampling = int(over_sampling) + 1
-            print(f"Oversampling {over_sampling} times")
-            to_keep = torch.cat([to_keep] * over_sampling)
-            
-    else:
-        if os.path.isfile(f"{args.save}/{target_dataset}/{args.subsample}_{args.seed}.pt") and args.seed == 1:
-            to_keep = torch.load(f"{args.save}/{target_dataset}/{args.subsample}_{args.seed}.pt")
-        else:
-            to_keep = torch.randperm(len(dataset_index))[:int(len(dataset_index)*args.subsample)]
-            torch.save(to_keep, f"{args.save}/{target_dataset}/{args.subsample}_{args.seed}.pt")
-        
-    index_dataset = IndexWrapper(dataset.train_dataset)
-    sampler = torch.utils.data.SubsetRandomSampler(to_keep)        
-    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, sampler=sampler, num_workers=8)
     
-    # Distribute the data and model across the GPUs.
-    ddp_loader = distribute_loader(data_loader)
     ddp_model = torch.nn.parallel.DistributedDataParallel(
         model,
         device_ids=[args.rank],
         find_unused_parameters=False,
         output_device=args.rank,
     )
+     
+    #Test-time
+    preds = get_preds(dataset.test_dataset, ddp_model, args)
+    
+    k = min(int((len(dataset.test_dataset) / classification_head.out_features) / 10), 100)
+    print(f"Selecting {k} trusted samples per class")
+    confs, amax = preds.max(dim=-1)
+    trusted = torch.tensor([], dtype=torch.long)
+    for c in range(classification_head.out_features):
+        #ids_c = torch.arange(len(preds))[amax == c]
+        ids_c = torch.argsort(preds[:, c])
+        trusted = torch.cat((trusted, ids_c[-k:]))
+        
+    trusted, _ = torch.sort(trusted)
+    unlabeled = torch.tensor([i for i in range(len(dataset.test_dataset)) if i not in trusted])
+    preds = torch.nn.functional.one_hot(amax, num_classes=classification_head.out_features)    
+    trusted_bool = torch.zeros(len(preds), dtype=torch.bool)
+    trusted_bool[ids_c] = 1
+    
+    asym_transforms = TwoAsymetricTransform(model.val_preprocess, preprocess_fn)
+        
+    dataset = get_dataset(
+        orig_dataset,
+        asym_transforms,
+        location=args.data_location,
+        batch_size=args.batch_size,
+        num_workers=8,
+    )
+    
+    index_dataset = IndexWrapper(dataset.test_dataset)
+    sampler = TwoStreamBatchSampler(unlabeled, trusted, args.batch_size)
+    data_loader = torch.utils.data.DataLoader(index_dataset, batch_sampler=sampler, num_workers=8)
 
+    # No current support for TwoStreamBatchSampler accross mutiple GPUs
+    ddp_loader = data_loader
+    
     num_batches = len(ddp_loader)
     # Printing loss between four and ten times an epoch
     if args.print_every * 10 < num_batches:
@@ -156,7 +185,7 @@ def train(task_vectors, args, comp_acc={}):
     else:
         print_every = args.print_every
 
-    loss_fn = torch.nn.CrossEntropyLoss()
+    loss_fn = ssl_loss_trusted
 
     params = [p for p in ddp_model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wd)
@@ -189,13 +218,14 @@ def train(task_vectors, args, comp_acc={}):
             )
 
             batch = maybe_dictionarize(batch)
-            inputs = batch["images"].cuda()
+            inputs, inputs_aug = batch["images"].cuda(), batch["images_"].cuda()
             data_time = time.time() - start_time
 
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                logits = ddp_model(inputs)
-                labels = batch["labels"].cuda()
-                loss = loss_fn(logits, labels)
+                logits = ddp_model(inputs)                
+                logits_aug = ddp_model(inputs_aug)
+                idx = batch["index"]
+                loss = loss_fn(logits, logits_aug, preds[idx], trusted_bool[idx])
                 loss = loss / args.num_grad_accumulation
 
             scaler.scale(loss).backward()
@@ -405,18 +435,15 @@ if __name__ == "__main__":
     args = parse_arguments()
     args.target_datasets = target_datasets
     # HACK: Some command line arguments are overwritten by defaults here.
-    args.lr = 1e-1
+    args.lr = 1e-2#or 1e-2
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 64 if args.model == "ViT-L-14" else 128
     args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
     args.print_every = 10
 
     args.logdir += f"{args.model}"
-    if type(args.subsample) == float:
-        args.logdir += f"/{args.subsample*100:.0f}perc"
-    else:
-        args.logdir += f"/{args.subsample}shots"
-        args.target_datasets = {k:10 for k,v in args.target_datasets.items()}#10 epochs for few-shots using ViTs. 30 epochs is better for ResNets.
+    args.logdir += f"/test_time"
+    args.target_datasets = {k:10 for k,v in args.target_datasets.items()}#10 epochs for few-shots using ViTs. 30 epochs is better for ResNets.
         
     args.save = os.path.join(args.save, f'{args.model}')
     if args.seed is not None:

@@ -116,7 +116,7 @@ def distribute_loader(loader):
             num_replicas=torch.distributed.get_world_size(),
             rank=torch.distributed.get_rank(),
         )
-        
+
     return torch.utils.data.DataLoader(
         loader.dataset,
         batch_size=loader.batch_size // torch.distributed.get_world_size(),

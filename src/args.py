@@ -198,6 +198,12 @@ def parse_arguments():
         default=21,
         help="Number of evaluation points used to find optimal coefficient in task arithmetic.",
     )
+    parser.add_argument(
+        "--atlas-n",
+        type=int,
+        default=None,
+        help="Run atlas x n where the task vectors are randomly partitioned n times (few-shot only)",
+    )
 
     parsed_args = parser.parse_args()
     parsed_args.device = "cuda" if torch.cuda.is_available() else "cpu"

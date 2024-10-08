@@ -59,7 +59,10 @@ def maybe_dictionarize(batch):
     if len(batch) == 2:
         batch = {'images': batch[0], 'labels': batch[1]}
     elif len(batch) == 3:
-        batch = {'images': batch[0], 'labels': batch[1], 'index': batch[2]}
+        if len(batch[0]) == 2:#Two transforms
+            batch = {'images': batch[0][0], 'images_':batch[0][1], 'labels': batch[1], 'index': batch[2]}
+        else:
+            batch = {'images': batch[0], 'labels': batch[1], 'index': batch[2]}
     else:
         raise ValueError(f'Unexpected number of elements: {len(batch)}')
 

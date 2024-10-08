@@ -5,14 +5,14 @@ import numpy as np
 import torch
 import tqdm
 from src.datasets.common import maybe_dictionarize
+from torch.utils.data.sampler import BatchSampler
+import itertools
 
 def assign_learning_rate(param_group, new_lr):
     param_group["lr"] = new_lr
 
-
 def _warmup_lr(base_lr, warmup_length, step):
     return base_lr * (step + 1) / warmup_length
-
 
 def cosine_lr(optimizer, base_lrs, warmup_length, steps):
     if not isinstance(base_lrs, list):
@@ -31,7 +31,6 @@ def cosine_lr(optimizer, base_lrs, warmup_length, steps):
 
     return _lr_adjuster
 
-
 def accuracy(output, target, topk=(1,)):
     pred = output.topk(max(topk), 1, True, True)[1].t()
     correct = pred.eq(target.view(1, -1).expand_as(pred))
@@ -40,7 +39,6 @@ def accuracy(output, target, topk=(1,)):
         for k in topk
     ]
 
-
 def torch_load_old(save_path, device=None):
     with open(save_path, "rb") as f:
         classifier = pickle.load(f)
@@ -48,12 +46,10 @@ def torch_load_old(save_path, device=None):
         classifier = classifier.to(device)
     return classifier
 
-
 def torch_save(model, save_path):
     if os.path.dirname(save_path) != "":
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(model, save_path)
-
 
 def torch_load(save_path, device=None):
     model = torch.load(save_path, map_location="cpu")
@@ -61,13 +57,11 @@ def torch_load(save_path, device=None):
         model = model.to(device)
     return model
 
-
 def get_logits(inputs, classifier):
     assert callable(classifier)
     if hasattr(classifier, "to"):
         classifier = classifier.to(inputs.device)
     return classifier(inputs)
-
 
 def get_probs(inputs, classifier):
     if hasattr(classifier, "predict_proba"):
@@ -75,7 +69,6 @@ def get_probs(inputs, classifier):
         return torch.from_numpy(probs)
     logits = get_logits(inputs, classifier)
     return logits.softmax(dim=1)
-
 
 class LabelSmoothing(torch.nn.Module):
     def __init__(self, smoothing=0.0):
@@ -91,7 +84,6 @@ class LabelSmoothing(torch.nn.Module):
         smooth_loss = -logprobs.mean(dim=-1)
         loss = self.confidence * nll_loss + self.smoothing * smooth_loss
         return loss.mean()
-
 
 class DotDict(dict):
     """dot.notation access to dictionary attributes"""
@@ -158,7 +150,7 @@ class IndexWrapper(torch.nn.Module):
     
 def get_n_shots_preds(dataset, shots, n_class, args):
     index_dataset = IndexWrapper(dataset)
-    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size*2, shuffle=True, num_workers=8)
+    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8)
     
     targets = - torch.ones(len(dataset), dtype=torch.long)
     with torch.no_grad():
@@ -177,6 +169,19 @@ def get_n_shots_preds(dataset, shots, n_class, args):
         to_keep = torch.cat((to_keep, ids_c[a[-shots:]]))
         
     return to_keep
+
+def get_preds(dataset, model, args):
+    index_dataset = IndexWrapper(dataset)
+    data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8)
+    
+    all_preds = - torch.ones((len(dataset), model.module.classification_head.out_features))
+    trusted = torch.zeros(len(dataset), dtype=torch.bool)
+    with torch.no_grad():
+        for i, batch in enumerate(tqdm.tqdm(data_loader)):
+            batch = maybe_dictionarize(batch)
+            preds = model(batch["images"].cuda())
+            all_preds[batch["index"]] = torch.nn.functional.softmax(preds, dim=-1).to(all_preds)
+    return all_preds
 
 
 class TIPWrapper(torch.nn.Module):
@@ -237,3 +242,57 @@ class _RepeatSampler(object):
 
     def __len__(self):
         return self.epochs * len(self.sampler)
+
+    
+def iterate_once(iterable):
+   
+    return np.random.permutation(iterable)
+
+
+def iterate_eternally(indices):
+    def infinite_shuffles():
+        while True:
+            yield np.random.permutation(indices)
+    return itertools.chain.from_iterable(infinite_shuffles())
+
+
+def grouper(iterable, n):
+    "Collect data into fixed-length chunks or blocks"
+    # grouper('ABCDEFG', 3) --> ABC DEF"
+    args = [iter(iterable)] * n
+    return zip(*args)
+
+class TwoStreamBatchSampler(BatchSampler):
+    """Iterate two sets of indices
+    An 'epoch' is one iteration through the primary indices.
+    During the epoch, the secondary indices are iterated through
+    as many times as needed.
+    """
+    def __init__(self, primary_indices, secondary_indices, batch_size):
+        self.primary_indices = primary_indices
+        self.secondary_indices = secondary_indices
+        self.inter_batch_size = 3 * batch_size // 4
+        self.batch_size = batch_size
+
+    def __iter__(self):
+        primary_iter = iterate_once(self.primary_indices)
+        secondary_iter = iterate_eternally(self.secondary_indices)
+        return (
+            primary_batch + secondary_batch
+            for (primary_batch, secondary_batch)
+            in  zip(grouper(primary_iter, 3*self.batch_size // 4),
+                    grouper(secondary_iter,  self.batch_size // 4))
+        )
+
+    def __len__(self):
+        return len(self.primary_indices) // self.inter_batch_size
+    
+class TwoAsymetricTransform:
+    """Create two asymetrics transforms of the same image"""
+
+    def __init__(self, transform, transform2):
+        self.transform = transform
+        self.transform2 = transform2
+ 
+    def __call__(self, x, *args, **kwargs):
+        return [self.transform(x, *args, **kwargs), self.transform2(x, *args, **kwargs)]
