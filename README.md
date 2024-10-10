@@ -16,14 +16,27 @@ arXiv preprint arXiv:2407:02880
 > The repository is currently being cleaned up. More documentation will be released soon.
 
 ## Few-shot
+
 [train_fewshot.sh](train_fewshot.sh) provides examples of training commands for the few-shot setting.
 Training for few-shot generalization requires access to the trained task vector checkpoints.
 One command with launch experiments over the 22 datasets.
 Per-dataset results are logged into the `{exp_name}/{seed}/results.txt` file.
 
 ## Test-time adaptation
-Test-time adaptation results using aTLAS and UFM can be reproduced by running.
 
+Test-time adaptation results using aTLAS and UFM can be reproduced by running
 ```sh
 python src/learn_ufm.py --model=ViT-B-32 --blockwise --exp_name results/ViT-B-32_aTLAS/testime/ 
+```
+
+# Cite us
+If our work is useful to your research, consider citing
+
+```bibtex
+@inproceedings{2024_NeurIPS_aTLAS,
+  title={Knowledge Composition using Task Vectors with Learned Anisotropic Scaling},
+  author={Zhang, Frederic Z and Albert, Paul and Rodriguez-Opazo, Cristian and Hengel, Anton van den and Abbasnejad, Ehsan},
+  booktitle={Conference on Neural Information Processing Systems (NeurIPS)},
+  year={2024}
+}
 ```
