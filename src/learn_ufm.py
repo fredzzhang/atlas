@@ -408,8 +408,8 @@ def train_adapter(ddp_model, ddp_loader, args, comp_acc, which='lpp'):
 if __name__ == "__main__":
 
     target_datasets = {
-        "Cars": 35,
-        "DTD": 76,
+        #"Cars": 35,
+        #"DTD": 76,
         "EuroSAT": 13,
         "GTSRB": 11,
         "MNIST": 5,
@@ -435,7 +435,7 @@ if __name__ == "__main__":
     args = parse_arguments()
     args.target_datasets = target_datasets
     # HACK: Some command line arguments are overwritten by defaults here.
-    args.lr = 1e-2
+    args.lr = 1e-3
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 64 if args.model == "ViT-L-14" else 128
     args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1
@@ -443,7 +443,7 @@ if __name__ == "__main__":
 
     args.logdir += f"{args.model}"
     args.logdir += f"/test_time"
-    args.target_datasets = {k:10 for k,v in args.target_datasets.items()}#10 epochs for few-shots using ViTs. 30 epochs is better for ResNets.
+    args.target_datasets = {k:10 for k,v in args.target_datasets.items()}#10 epochs for few-shots using ViTs.
         
     args.save = os.path.join(args.save, f'{args.model}')
     if args.seed is not None:
