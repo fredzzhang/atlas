@@ -416,7 +416,7 @@ if __name__ == "__main__":
         args.logdir += f"/{args.subsample*100:.0f}perc"
     else:
         args.logdir += f"/{args.subsample}shots"
-        args.target_datasets = {k:10 for k,v in args.target_datasets.items()}#10 epochs for few-shots using ViTs. 30 epochs is better for ResNets.
+        args.target_datasets = {k:10 for k,v in args.target_datasets.items()}#10 epochs for few-shots using ViTs. 
         
     args.save = os.path.join(args.save, f'{args.model}')
     if args.seed is not None:

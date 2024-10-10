@@ -435,7 +435,7 @@ if __name__ == "__main__":
     args = parse_arguments()
     args.target_datasets = target_datasets
     # HACK: Some command line arguments are overwritten by defaults here.
-    args.lr = 1e-2#or 1e-2
+    args.lr = 1e-2
     # We use gradient accumulation to simulate larger batch sizes if the model does not fit in memory.
     args.batch_size = 64 if args.model == "ViT-L-14" else 128
     args.num_grad_accumulation = 2 if args.model == "ViT-L-14" else 1

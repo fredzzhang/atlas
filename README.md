@@ -14,3 +14,16 @@ arXiv preprint arXiv:2407:02880
 
 > [!NOTE]
 > The repository is currently being cleaned up. More documentation will be released soon.
+
+## Few-shot
+[train_fewshot.sh](train_fewshot.sh) provides examples of training commands for the few-shot setting.
+Training for few-shot generalization requires access to the trained task vector checkpoints.
+One command with launch experiments over the 22 datasets.
+Per-dataset results are logged into the `{exp_name}/{seed}/results.txt` file.
+
+## Test-time adaptation
+Test-time adaptation results using aTLAS and UFM can be reproduced by running.
+
+```sh
+python src/learn_ufm.py --model=ViT-B-32 --blockwise --exp_name results/ViT-B-32_aTLAS/testime/ 
+```

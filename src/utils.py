@@ -148,7 +148,7 @@ class IndexWrapper(torch.nn.Module):
     def __len__(self):
         return len(self.dataset)
     
-def get_n_shots_preds(dataset, shots, n_class, args):
+def get_n_shots(dataset, shots, n_class, args):
     index_dataset = IndexWrapper(dataset)
     data_loader = torch.utils.data.DataLoader(index_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8)
     
