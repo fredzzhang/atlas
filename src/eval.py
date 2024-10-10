@@ -20,24 +20,30 @@ from src.linearize import LinearizedImageEncoder
 from src.modeling import ImageClassifier
 
 
-def eval_single_dataset(image_encoder, dataset_name, args):
+def eval_single_dataset(image_encoder, dataset_name, args, model=None):
     # Build the classification head with all classes, when the dataset only has one.
     if '_' in dataset_name:
         dataset_name_ = dataset_name.split('_')[-1]
     else:
         dataset_name_ = dataset_name
-    classification_head = get_classification_head(args, dataset_name_)
-    model = ImageClassifier(image_encoder, classification_head)
+
+    if model is None:
+        classification_head = get_classification_head(args, dataset_name_)
+        model = ImageClassifier(image_encoder, classification_head)
+        val_preprocess = model.val_preprocess
+    else:#Adapter wrappers
+        val_preprocess = model.module.model.val_preprocess
 
     model.eval()
 
     dataset = get_dataset(
         dataset_name,
-        model.val_preprocess,
+        val_preprocess,
         location=args.data_location,
         batch_size=args.batch_size,
-        num_workers=2,
+        num_workers=8,
     )
+    
     dataloader = get_dataloader(dataset, is_train=False, args=args, image_encoder=None)
     device = args.device
 
