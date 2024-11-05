@@ -24,8 +24,7 @@ def parse_arguments():
     parser.add_argument(
         "--data-location",
         type=str,
-        #default=os.path.expanduser("~/data"),
-        default=os.path.expanduser("~/Documents/data"),
+        default=os.path.expanduser("~/data"),
         help="The root directory for the datasets.",
     )
     parser.add_argument(
@@ -135,8 +134,8 @@ def parse_arguments():
     parser.add_argument(
         "--save",
         type=str,
-        default='../aries/checkpoints',
-        help="Where to load zs weights and task vectors",
+        default=None,
+        help="Where to load zero-shot weights and task vectors",
     )
     parser.add_argument(
         "--logdir",
