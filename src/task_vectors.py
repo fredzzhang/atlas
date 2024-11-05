@@ -36,7 +36,7 @@ class _TaskVector(abc.ABC):
                         continue
                     self.vector[key] = (
                         finetuned_state_dict[key] - pretrained_state_dict[key]
-                    ).half()
+                    ).half()        # Convert to 16-bit precision
 
     @abc.abstractmethod
     def _load_checkpoint(self, checkpoint):
