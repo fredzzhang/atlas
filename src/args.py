@@ -66,12 +66,6 @@ def parse_arguments():
         help="Subsample the datasets with a float or specify the number of shots with an integer."
     )
     parser.add_argument(
-        "--partition",
-        default="trainval",
-        choices=["trainval", "traintest"],
-        help="Partitions of the dataset to use."
-    )
-    parser.add_argument(
         "--control-threshold",
         default=0.95,
         type=float,
@@ -199,10 +193,10 @@ def parse_arguments():
         help="Number of evaluation points used to find optimal coefficient in task arithmetic.",
     )
     parser.add_argument(
-        "--atlas-n",
+        "--partition",
         type=int,
         default=None,
-        help="Run atlas x n where the task vectors are randomly partitioned n times (few-shot only)",
+        help="Run atlas x K where the task vectors are randomly partitioned n times (few-shot only)",
     )
 
     parsed_args = parser.parse_args()
