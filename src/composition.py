@@ -1,6 +1,8 @@
 """Models with learnable weights on task vectors 
 
 Fred Zhang <frederic.zhang@adelaide.edu.au>
+Paul Albert <paul.albert@adelaide.edu.au>
+
 Australian Institute for Machine Learning
 """
 
@@ -25,7 +27,7 @@ def mask_multiply(coefs, mask, params):
     return torch.einsum('ibk,ibk->bk', coef_mask, params)
 
 class WeightedImageEncoder(nn.Module):
-    def __init__(self, model, task_vectors, blockwise=True, part_wise=None) -> None:
+    def __init__(self, model, task_vectors, blockwise=True, partition=None) -> None:
         """A wrapper class to enable compositions of task vectors
 
         Parameter:
@@ -54,12 +56,12 @@ class WeightedImageEncoder(nn.Module):
 
         self.dparams = [[tv.vector[k] for k in tv.vector] for tv in task_vectors]
         self.blockwise = blockwise
-        self.part_wise = part_wise
-        if self.part_wise is not None:
+        self.partition = partition
+        if self.partition is not None:
             self.mask_mats = {}
-            self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params), self.part_wise))
+            self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params), self.partition))
             for p in self.params:
-                mask = torch.randint(self.part_wise, p.shape)
+                mask = torch.randint(self.partition, p.shape)
                 self.mask_mats[p.shape] = torch.nn.Parameter(torch.nn.functional.one_hot(mask).moveaxis(-1, 0).half(), requires_grad=False)
         elif blockwise:
             self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params)))
@@ -83,7 +85,7 @@ class WeightedImageEncoder(nn.Module):
         super().train(mode)
 
     def forward(self, x) -> torch.Tensor:
-        if self.part_wise is not None:
+        if self.partition is not None:
             dparams = [mask_multiply(self.coef[:,i,], self.mask_mats[dp[0].shape], torch.cat([d.unsqueeze(0) for d in dp], dim=0)) for i, dp in enumerate(zip(*self.dparams))]
         elif self.blockwise:
             dparams = [sum([p * c[i] for p, c in zip(dp, self.coef)]) for i, dp in enumerate(zip(*self.dparams))]
