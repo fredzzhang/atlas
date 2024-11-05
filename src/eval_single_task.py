@@ -48,13 +48,15 @@ for dataset in [
     "ImageNet",
     "STL10",
     "Food101",
+    "Caltech101",
     "Caltech256",
     "FGVCAircraft",
     "Flowers102",
     "OxfordIIITPet",
     "CUB200",
     "PascalVOC",
-    "Country211"
+    "Country211",
+    "UCF101",
 ]:
     print("*" * 100)
     print(f"Evaluating on {dataset}")

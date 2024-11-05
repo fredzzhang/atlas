@@ -129,7 +129,9 @@ def main(rank, args):
         head_path = os.path.join(ckpdir, "learned_additions.pt")
         log_path = os.path.join(args.save, "learned_additions.json")
         coef = ddp_model.module.image_encoder.coef
-    if args.subsample is not None:
+    if isinstance(args.subsample, int):
+        raise NotImplementedError(f"Option for {args.subsample}-shot is not implemented.")
+    elif args.subsample < 1.0:
         head_path = head_path[:-3] + f"_{args.subsample*100:.0f}perc.pt"
         log_path = log_path[:-5] + f"_{args.subsample*100:.0f}perc.json"
 

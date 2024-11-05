@@ -1,6 +1,8 @@
 """Models with learnable weights on task vectors 
 
 Fred Zhang <frederic.zhang@adelaide.edu.au>
+Paul Albert <paul.albert@adelaide.edu.au>
+
 Australian Institute for Machine Learning
 """
 
@@ -8,9 +10,24 @@ import torch
 
 from torch import nn
 from functorch import jvp, make_functional_with_buffers
+
+def mask_multiply(coefs, mask, params):
+    if params.ndim != 3:
+        return (coefs*0.).sum()
+    if params.ndim == 1:
+        return (coefs.sum(dim=-1) * params).sum(dim=0) #Classic block wise for 1-dim parameters
+    if params.ndim == 2:
+        coef_mask = torch.einsum('ij,jk->ik', coefs, mask.to(coefs))
+        return torch.einsum('ik,ik->k', coef_mask, params)
+    if params.ndim == 5: #Conv layer
+        coef_mask = torch.einsum('ij,jdkcb->idkcb', coefs, mask.to(coefs))
+        return torch.einsum('idkcb,idkcb->dkcb', coef_mask, params)
     
+    coef_mask = torch.einsum('ij,jbk->ibk', coefs.to(mask), mask)
+    return torch.einsum('ibk,ibk->bk', coef_mask, params)
+
 class WeightedImageEncoder(nn.Module):
-    def __init__(self, model, task_vectors, blockwise=True) -> None:
+    def __init__(self, model, task_vectors, blockwise=True, partition=None) -> None:
         """A wrapper class to enable compositions of task vectors
 
         Parameter:
@@ -39,7 +56,14 @@ class WeightedImageEncoder(nn.Module):
 
         self.dparams = [[tv.vector[k] for k in tv.vector] for tv in task_vectors]
         self.blockwise = blockwise
-        if blockwise:
+        self.partition = partition
+        if self.partition is not None:
+            self.mask_mats = {}
+            self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params), self.partition))
+            for p in self.params:
+                mask = torch.randint(self.partition, p.shape)
+                self.mask_mats[p.shape] = torch.nn.Parameter(torch.nn.functional.one_hot(mask).moveaxis(-1, 0).half(), requires_grad=False)
+        elif blockwise:
             self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors), len(self.params)))
         else:
             self.coef = torch.nn.Parameter(torch.zeros(len(task_vectors),))
@@ -53,10 +77,17 @@ class WeightedImageEncoder(nn.Module):
         new_self = super()._apply(fn=fn)
         new_self.buffer = (fn(x) for x in new_self.buffer)
         new_self.dparams = [[fn(x) for x in tv] for tv in new_self.dparams]
+        if hasattr(self, 'mask_mats'):
+            new_self.mask_mats = {k: fn(v) for k,v in new_self.mask_mats.items()}
         return new_self
+    
+    def train(self, mode=True):
+        super().train(mode)
 
     def forward(self, x) -> torch.Tensor:
-        if self.blockwise:
+        if self.partition is not None:
+            dparams = [mask_multiply(self.coef[:,i,], self.mask_mats[dp[0].shape], torch.cat([d.unsqueeze(0) for d in dp], dim=0)) for i, dp in enumerate(zip(*self.dparams))]
+        elif self.blockwise:
             dparams = [sum([p * c[i] for p, c in zip(dp, self.coef)]) for i, dp in enumerate(zip(*self.dparams))]
         else:
             dparams = [sum([p * c for p, c in zip(dp, self.coef)]) for dp in zip(*self.dparams)]

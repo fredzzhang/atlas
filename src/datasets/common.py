@@ -1,6 +1,8 @@
 """Dataset, dataloader and sampler utilities
 
 Fred Zhang <frederic.zhang@adelaide.edu.au>
+Paul Albert <paul.albert@adelaide.edu.au>
+
 Australian Institute for Machine Learning
 
 Modified from the codebase by Ilharco et al.,
@@ -59,7 +61,10 @@ def maybe_dictionarize(batch):
     if len(batch) == 2:
         batch = {'images': batch[0], 'labels': batch[1]}
     elif len(batch) == 3:
-        batch = {'images': batch[0], 'labels': batch[1], 'metadata': batch[2]}
+        if len(batch[0]) == 2:#Two transforms
+            batch = {'images': batch[0][0], 'images_':batch[0][1], 'labels': batch[1], 'index': batch[2]}
+        else:
+            batch = {'images': batch[0], 'labels': batch[1], 'index': batch[2]}
     else:
         raise ValueError(f'Unexpected number of elements: {len(batch)}')
 
@@ -143,7 +148,7 @@ def get_dataloader(dataset, is_train, args, image_encoder=None):
         dataloader = dataset.train_loader if is_train else dataset.test_loader
 
     # Subsample a percentage of the training data if needed
-    if args.subsample is not None and is_train:
+    if isinstance(args.subsample, float) and is_train:
         src = dataloader.dataset
         subsample_size = int(len(src) * args.subsample)
         lengths = [subsample_size, len(src) - subsample_size]
