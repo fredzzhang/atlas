@@ -3,12 +3,12 @@ for shots in 1 2 4 8 16 0.5 1.0;do
     python src/learn_few_shots.py --model=ViT-B-32 --blockwise --subsample $shots --exp_name results/ViT-B-32_aTLAS/${shots}_shots/
 done
 
-#aTLAS x N
+#aTLAS x K
 for shots in 1 2 4 8 16 0.5 1.0;do
     #aTLAS x 10
-    python src/learn_few_shots.py --model=ViT-B-32 --atlas-n 10 --subsample $shots --exp_name results/ViT-B-32_aTLASx10/${shots}_shots/
+    python src/learn_few_shots.py --model=ViT-B-32 --partition 10 --subsample $shots --exp_name results/ViT-B-32_aTLASx10/${shots}_shots/
     #aTLAS x 50
-    python src/learn_few_shots.py --model=ViT-B-32 --atlas-n 50 --subsample $shots --exp_name results/ViT-B-32_aTLASx50/${shots}_shots/
+    python src/learn_few_shots.py --model=ViT-B-32 --partition 50 --subsample $shots --exp_name results/ViT-B-32_aTLASx50/${shots}_shots/
 done
 
 #aTLAS with LP++ or TIP (sequentially only)
