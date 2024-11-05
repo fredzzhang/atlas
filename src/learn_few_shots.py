@@ -1,8 +1,10 @@
-"""Given an objective,
-learn the coefficients on task vectors for a dataset
+"""Learn the coefficients on task vectors
+under the few-shot setting for a dataset
 and find the optimal combination.
 
+Paul Albert <paul.albert@adelaide.edu.au>
 Fred Zhang <frederic.zhang@adelaide.edu.au>
+
 Australian Institute for Machine Learning
 """
 
@@ -88,7 +90,7 @@ def train(task_vectors, args, comp_acc={}):
 
     image_encoder = ImageEncoder(args)
     image_encoder = WeightedImageEncoder(
-        image_encoder, task_vectors, blockwise=args.blockwise_coef, part_wise=args.atlas_n, 
+        image_encoder, task_vectors, blockwise=args.blockwise_coef, partition=args.partition,
     )
 
     classification_head = get_classification_head(args, target_dataset)
