@@ -1,9 +1,13 @@
+
+> [!NOTE]
+> The repository is still being cleaned up. More documentation will be released soon.
+
 # Task Vectors with Learned Anisotropic Scaling
 
-This repository contains the official PyTorch implementation for the paper
-> Frederic Z. Zhang, Paul Albert, Cristian Rodriguez-Opazo, Anton van den Hengel, Ehsan Abbasnejad;
-_Knowledge Composition using Task Vectors with Learned Anisotropic Scaling_;
-arXiv preprint arXiv:2407:02880
+This repository contains the official PyTorch implementation for the NeurIPS'24 paper
+> Frederic Z. Zhang, Paul Albert, Cristian Rodriguez-Opazo, Anton van den Hengel, Ehsan Abbasnejad.
+_Knowledge Composition using Task Vectors with Learned Anisotropic Scaling_.
+In Advances in Neural Information Processing Systems (NeurIPS), 2024.
 
 <a href="http://arxiv.org/abs/2407.02880">Preprint</a>
 
@@ -12,10 +16,42 @@ arXiv preprint arXiv:2407:02880
 
 <img src="./assets/teaser_a.png" height="300">&nbsp;&nbsp;<img src="./assets/teaser_b.png" height="300">
 
-> [!NOTE]
-> The repository is currently being cleaned up. More documentation will be released soon.
+# Citation
+If you find our work useful for your research, please consider citing us
+```bibtex
+@inproceedings{atlas_neurips_2024 ,
+  title     = {Knowledge Composition using Task Vectors with Learned Anisotropic Scaling},
+  author    = {Zhang, Frederic Z and Albert, Paul and Rodriguez-Opazo, Cristian and van den Hengel, Anton and Abbasnejad, Ehsan},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2024}
+}
+```
 
-## Few-shot
+## Prerequisites
+1. Create a `conda` environment and install the dependencies.
+```
+conda env create -f environment.yml
+```
+2. Download and prepare the [datasets](./DATASETS.md).
+
+## Reproducing experiment results
+
+### 1. Task negation
+TBA
+### 2. Task addition
+TBA
+### 3. Few-shot adaptation
+TBA
+### 4. Test-time adaptation
+TBA
+### 5. Parameter-efficient fine-tuning
+TBA
+
+<!-- ## Task addition
+
+## Task negation
+
+## Few-shot recognition
 
 [train_fewshot.sh](train_fewshot.sh) provides examples of training commands for the few-shot setting.
 Training for few-shot generalization requires access to the trained task vector checkpoints.
@@ -27,16 +63,8 @@ Per-dataset results are logged into the `{exp_name}/{seed}/results.txt` file.
 Test-time adaptation results using aTLAS and UFM can be reproduced by running
 ```sh
 python src/learn_ufm.py --model=ViT-B-32 --blockwise --exp_name results/ViT-B-32_aTLAS/testime/ 
-```
+``` -->
 
-# Cite us
-If our work is useful to your research, consider citing
+## Acknowledgement
 
-```bibtex
-@inproceedings{2024_NeurIPS_aTLAS,
-  title={Knowledge Composition using Task Vectors with Learned Anisotropic Scaling},
-  author={Zhang, Frederic Z and Albert, Paul and Rodriguez-Opazo, Cristian and Hengel, Anton van den and Abbasnejad, Ehsan},
-  booktitle={Conference on Neural Information Processing Systems (NeurIPS)},
-  year={2024}
-}
-```
+This repository is largely based on the code provided by [Ilharco et al. (2022)](https://github.com/mlfoundations/task_vectors) and [Ortiz-Jimenez et al. (2023)](https://github.com/gortizji/tangent_task_arithmetic).
