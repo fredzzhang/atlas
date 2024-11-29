@@ -4,25 +4,26 @@ The checkpoints are available for download on [HuggingFace](https://huggingface.
 Downloaded files should be extracted and organised in the following structure.
 
 ```
-└── checkpoints
-    └── ViT-B-32
-        └── zeroshot_accuracies.json
-        └── ft_accuracies.json
-        └── head_CarsVal.pt
-        └── CarsVal
-            └── zeroshot.pt
-            └── finetuned.pt
-        └── head_DTDVal.pt
-        └── DTDVal
-            └── zeroshot.pt
-            └── finetuned.pt
-        └── ...
-    └── ViT-B-16
-        └── ...
-    └── ViT-L-14
-        └── ...
-    └── RN50
-        └── ...
-    └── RN101
-        └── ...
+└── atlas
+    └── checkpoints
+        └── ViT-B-32
+            └── zeroshot_accuracies.json
+            └── ft_accuracies.json
+            └── head_CarsVal.pt
+            └── CarsVal
+                └── zeroshot.pt
+                └── finetuned.pt
+            └── head_DTDVal.pt
+            └── DTDVal
+                └── zeroshot.pt
+                └── finetuned.pt
+            └── ...
+        └── ViT-B-16
+            └── ...
+        └── ViT-L-14
+            └── ...
+        └── RN50
+            └── ...
+        └── RN101
+            └── ...
 ```
