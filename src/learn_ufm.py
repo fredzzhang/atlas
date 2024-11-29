@@ -410,8 +410,8 @@ def train_adapter(ddp_model, ddp_loader, args, comp_acc, which='lpp'):
 if __name__ == "__main__":
 
     target_datasets = {
-        #"Cars": 35,
-        #"DTD": 76,
+        "Cars": 35,
+        "DTD": 76,
         "EuroSAT": 13,
         "GTSRB": 11,
         "MNIST": 5,
