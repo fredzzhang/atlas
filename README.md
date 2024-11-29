@@ -1,6 +1,6 @@
 
-> [!NOTE]
-> The repository is still being cleaned up. More documentation will be released soon.
+<!-- > [!NOTE]
+> The repository is still being cleaned up. More documentation will be released soon. -->
 
 # Task Vectors with Learned Anisotropic Scaling
 
@@ -19,7 +19,7 @@ In Advances in Neural Information Processing Systems (NeurIPS), 2024.
 # Citation
 If you find our work useful for your research, please consider citing us
 ```bibtex
-@inproceedings{atlas_neurips_2024 ,
+@inproceedings{atlas_neurips_2024,
   title     = {Knowledge Composition using Task Vectors with Learned Anisotropic Scaling},
   author    = {Zhang, Frederic Z and Albert, Paul and Rodriguez-Opazo, Cristian and van den Hengel, Anton and Abbasnejad, Ehsan},
   booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
@@ -32,38 +32,52 @@ If you find our work useful for your research, please consider citing us
 ```
 conda env create -f environment.yml
 ```
-2. Download and prepare the [datasets](./DATASETS.md).
+2. Add project directory to `PYTHONPATH` in `.bashrc`
+```bash
+export PYTHONPATH="$PYTHONPATH:/path/to/atlas"
+```
+3. Download and prepare the [datasets](./DATASETS.md).
 
 ## Reproducing experiment results
 
 ### 1. Task negation
-TBA
+```bash
+MODEL=ViT-B-32
+python src/learn_task_negation.py --model=${MODEL} --blockwise-coef 
+```
+Detailed performance is saved at `/path/to/atlas/checkpoints/${MODEL}/learned_negations.json`.
 ### 2. Task addition
-TBA
+```bash
+MODEL=ViT-B-32
+python src/learn_task_addition.py --model=${MODEL} --blockwise-coef 
+```
+Detailed performance is saved at `/path/to/atlas/checkpoints/${MODEL}/learned_additions.json`.
 ### 3. Few-shot adaptation
-TBA
+```bash
+MODEL=ViT-B-32
+# aTLAS for different few-shot settings
+for SHOT in 1 2 4 8 16;do
+    python src/learn_few_shots.py --model=${MODEL} --blockwise-coef --subsample ${SHOT} --exp_name results/${MODEL}_atlas/${SHOT}-shot/
+done
+# aTLAS with LP++ or Tip
+for SHOT in 1 2 4 8 16;do
+    python src/learn_few_shots.py --model=${MODEL} --blockwise-coef --subsample ${SHOT} --exp_name results/${MODEL}_atlas_w_tip/${SHOT}-shot/ --adapter tip
+    python src/learn_few_shots.py --model=${MODEL} --blockwise-coef --subsample ${SHOT} --exp_name results/${MODEL}_atlas_w_lpp/${Shot}-shot/ --adapter lpp
+done
+```
 ### 4. Test-time adaptation
-TBA
+```bash
+MODEL=ViT-B-32
+python src/learn_ufm.py --model=${MODEL} --blockwise-coef --exp_name results/${MODEL}/tta/
+```
 ### 5. Parameter-efficient fine-tuning
-TBA
-
-<!-- ## Task addition
-
-## Task negation
-
-## Few-shot recognition
-
-[train_fewshot.sh](train_fewshot.sh) provides examples of training commands for the few-shot setting.
-Training for few-shot generalization requires access to the trained task vector checkpoints.
-One command with launch experiments over the 22 datasets.
-Per-dataset results are logged into the `{exp_name}/{seed}/results.txt` file.
-
-## Test-time adaptation
-
-Test-time adaptation results using aTLAS and UFM can be reproduced by running
-```sh
-python src/learn_ufm.py --model=ViT-B-32 --blockwise --exp_name results/ViT-B-32_aTLAS/testime/ 
-``` -->
+```bash
+# aTLAS with K partitions using different percentage of data (aTLAS x K)
+for PERC in 0.01 0.05 0.1 0.25 0.35 0.5 1.0;do
+    python src/learn_few_shots.py --model=${MODEL} --partition 10 --subsample ${PERC} --exp_name results/${MODEL}_atlasx10/${PERC}/
+    python src/learn_few_shots.py --model=${MODEL} --partition 50 --subsample ${PERC} --exp_name results/${MODEL}_atlasx50/${PERC}/
+done
+```
 
 ## Acknowledgement
 
