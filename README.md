@@ -44,32 +44,32 @@ export PYTHONPATH="$PYTHONPATH:/path/to/atlas"
 ### 1. Task negation
 ```bash
 MODEL=ViT-B-32
-python src/learn_task_negation.py --model=${MODEL} --blockwise-coef 
+python src/learn_task_negation.py --model=$MODEL --blockwise-coef 
 ```
-Detailed performance is saved at `/path/to/atlas/checkpoints/${MODEL}/learned_negations.json`.
+Detailed performance is saved at `/path/to/atlas/checkpoints/$MODEL/learned_negations.json`.
 ### 2. Task addition
 ```bash
 MODEL=ViT-B-32
-python src/learn_task_addition.py --model=${MODEL} --blockwise-coef 
+python src/learn_task_addition.py --model=$MODEL --blockwise-coef 
 ```
-Detailed performance is saved at `/path/to/atlas/checkpoints/${MODEL}/learned_additions.json`.
+Detailed performance is saved at `/path/to/atlas/checkpoints/$MODEL/learned_additions.json`.
 ### 3. Few-shot adaptation
 ```bash
 MODEL=ViT-B-32
 # aTLAS for different few-shot settings
 for SHOT in 1 2 4 8 16;do
-    python src/learn_few_shots.py --model=${MODEL} --blockwise-coef --subsample ${SHOT}
+    python src/learn_few_shots.py --model=$MODEL --blockwise-coef --subsample $SHOT
 done
 # aTLAS with LP++ or Tip
 for SHOT in 1 2 4 8 16;do
-    python src/learn_few_shots.py --model=${MODEL} --blockwise-coef --subsample ${SHOT} --adapter tip
-    python src/learn_few_shots.py --model=${MODEL} --blockwise-coef --subsample ${SHOT} --adapter lpp
+    python src/learn_few_shots.py --model=$MODEL --blockwise-coef --subsample $SHOT --adapter tip
+    python src/learn_few_shots.py --model=$MODEL --blockwise-coef --subsample $SHOT --adapter lpp
 done
 ```
 ### 4. Test-time adaptation
 ```bash
 MODEL=ViT-B-32
-python src/learn_ufm.py --model=${MODEL} --blockwise-coef
+python src/learn_ufm.py --model=$MODEL --blockwise-coef
 ```
 ### 5. Parameter-efficient fine-tuning
 ```bash
@@ -77,7 +77,7 @@ MODEL=ViT-B-32
 PARTITION=10
 # aTLAS with K partitions using different percentage of data (aTLAS x K)
 for PERC in 0.01 0.05 0.1 0.25 0.35 0.5 1.0;do
-    python src/learn_few_shots.py --model=${MODEL} --partition ${PATITION} --subsample ${PERC}
+    python src/learn_few_shots.py --model=$MODEL --partition $PATITION --subsample $PERC
 done
 ```
 
