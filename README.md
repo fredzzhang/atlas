@@ -16,7 +16,7 @@ In Advances in Neural Information Processing Systems (NeurIPS), 2024.
 
 <img src="./assets/teaser_a.png" height="300">&nbsp;&nbsp;<img src="./assets/teaser_b.png" height="300">
 
-# Citation
+## Citation
 If you find our work useful for your research, please consider citing us
 ```bibtex
 @inproceedings{atlas_neurips_2024,
@@ -37,6 +37,7 @@ conda env create -f environment.yml
 export PYTHONPATH="$PYTHONPATH:/path/to/atlas"
 ```
 3. Download and prepare the [datasets](./DATASETS.md).
+4. Download and prepare the [checkpoints](./CHECKPOINTS.md) for task vectors.
 
 ## Reproducing experiment results
 
@@ -57,25 +58,26 @@ Detailed performance is saved at `/path/to/atlas/checkpoints/${MODEL}/learned_ad
 MODEL=ViT-B-32
 # aTLAS for different few-shot settings
 for SHOT in 1 2 4 8 16;do
-    python src/learn_few_shots.py --model=${MODEL} --blockwise-coef --subsample ${SHOT} --exp_name results/${MODEL}_atlas/${SHOT}-shot/
+    python src/learn_few_shots.py --model=${MODEL} --blockwise-coef --subsample ${SHOT}
 done
 # aTLAS with LP++ or Tip
 for SHOT in 1 2 4 8 16;do
-    python src/learn_few_shots.py --model=${MODEL} --blockwise-coef --subsample ${SHOT} --exp_name results/${MODEL}_atlas_w_tip/${SHOT}-shot/ --adapter tip
-    python src/learn_few_shots.py --model=${MODEL} --blockwise-coef --subsample ${SHOT} --exp_name results/${MODEL}_atlas_w_lpp/${Shot}-shot/ --adapter lpp
+    python src/learn_few_shots.py --model=${MODEL} --blockwise-coef --subsample ${SHOT} --adapter tip
+    python src/learn_few_shots.py --model=${MODEL} --blockwise-coef --subsample ${SHOT} --adapter lpp
 done
 ```
 ### 4. Test-time adaptation
 ```bash
 MODEL=ViT-B-32
-python src/learn_ufm.py --model=${MODEL} --blockwise-coef --exp_name results/${MODEL}/tta/
+python src/learn_ufm.py --model=${MODEL} --blockwise-coef
 ```
 ### 5. Parameter-efficient fine-tuning
 ```bash
+MODEL=ViT-B-32
+PARTITION=10
 # aTLAS with K partitions using different percentage of data (aTLAS x K)
 for PERC in 0.01 0.05 0.1 0.25 0.35 0.5 1.0;do
-    python src/learn_few_shots.py --model=${MODEL} --partition 10 --subsample ${PERC} --exp_name results/${MODEL}_atlasx10/${PERC}/
-    python src/learn_few_shots.py --model=${MODEL} --partition 50 --subsample ${PERC} --exp_name results/${MODEL}_atlasx50/${PERC}/
+    python src/learn_few_shots.py --model=${MODEL} --partition ${PATITION} --subsample ${PERC}
 done
 ```
 
